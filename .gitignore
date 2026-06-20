@@ -1,0 +1,7 @@
+sagelang-lib-crypto/
+identity.key
+identity.pub
+peers.toml
+*.svm
+*.sgrv
+*.sgvm
