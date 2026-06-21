@@ -4,9 +4,11 @@
 import tcp
 import thread
 import sys
+import io
 import sagelink.handshake.noise_ik as noise_ik
 import sagelink.mux.stream as stream
 import sagelink.app.cmd as cmd
+import sagelink.app.file as file_app
 
 proc to_list(b):
     if b == nil:
@@ -96,6 +98,12 @@ proc run_server():
             end
             thread.spawn(run_cmd)
         end
+        if s["service"] == "FILE":
+            proc run_file():
+                file_app.handle_file_stream(m, s)
+            end
+            thread.spawn(run_file)
+        end
     end
     
     stream.start_mux_reader(mux, server_stream_dispatcher)
@@ -160,6 +168,27 @@ proc run_client():
     let res2 = cmd.run_remote_cmd(mux, "ls -la /etc/resolv.conf")
     print "Client: Result status: " + str(res2["exit_code"])
     print "Client: Result output:\n" + res2["output"]
+    
+    # ── Test File Transfer ──
+    print "Client: Creating a local test file..."
+    let test_content = "Hello! This is a test file for the SageLink chunked FILE transfer service. It is sent over the multiplexed Noise channel!"
+    io.writefile("test_send.txt", test_content)
+    
+    print "Client: Transferring test_send.txt to remote target test_recv.txt..."
+    let transfer_ok = file_app.send_file(mux, "test_send.txt", "test_recv.txt")
+    print "Client: File transfer status: " + str(transfer_ok)
+    
+    if transfer_ok:
+        print "Client: Verifying remote file contents via CMD..."
+        let cat_res = cmd.run_remote_cmd(mux, "cat test_recv.txt")
+        print "Client: Remote file contents:\n" + cat_res["output"]
+        
+        # Clean up files
+        sys.shell_exec("rm test_send.txt")
+        cmd.run_remote_cmd(mux, "rm test_recv.txt")
+    else:
+        print "Client: FILE TRANSFER FAILED!"
+    end
     
     # Shut down mux
     mux["running"] = false
