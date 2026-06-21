@@ -52,6 +52,11 @@ def warn(detail):
 def run(cmd, **kw):
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
+    env = kw.pop("env", None) or os.environ.copy()
+    env.setdefault("SAGE_PATH",
+        str(Path("sagelang-lib-crypto").resolve()) + ":" +
+        str(Path(".").resolve()))
+    kw["env"] = env
     try:
         return subprocess.run(cmd, **kw)
     except FileNotFoundError:
