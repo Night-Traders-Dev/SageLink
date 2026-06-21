@@ -89,7 +89,10 @@ proc run_server():
     print "Server: Handshake completed successfully!"
     
     # Initialize Mux
-    let mux = stream.create_mux(sock, bob_transport["send"], bob_transport["recv"])
+    let mux = stream.create_mux(
+        sock, bob_transport["send"], bob_transport["recv"],
+        "responder", bob_keys
+    )
     
     # Setup Incoming Stream Callback
     proc server_stream_dispatcher(m, s):
@@ -162,7 +165,11 @@ proc run_client():
     print "Client: Handshake completed successfully!"
     
     # Initialize Mux
-    let mux = stream.create_mux(sock, alice_transport["send"], alice_transport["recv"])
+    let mux = stream.create_mux(
+        sock, alice_transport["send"], alice_transport["recv"],
+        "initiator", alice_keys, bob_keys["pub"]
+    )
+    mux["rekey_threshold"] = 5
     stream.start_mux_reader(mux)
     
     # ── Test Remote Command Execution ──

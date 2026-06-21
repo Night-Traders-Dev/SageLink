@@ -3,6 +3,7 @@
 
 import thread
 import sagelink.transport.framing as framing
+import sagelink.handshake.noise_ik as noise_ik
 
 # Msg Types
 let CHAN_OPEN = 0x01
@@ -17,8 +18,10 @@ let SHELL_DATA = 0x30
 let SHELL_RESIZE = 0x31
 let PING = 0xF0
 let PONG = 0xF1
+let REKEY_MSG1 = 0x40
+let REKEY_MSG2 = 0x41
 
-proc create_mux(sock, send_key, recv_key):
+proc create_mux(sock, send_key, recv_key, role = nil, local_keys = nil, remote_pub = nil):
     let mux = {}
     mux["sock"] = sock
     mux["send_key"] = send_key
@@ -34,16 +37,157 @@ proc create_mux(sock, send_key, recv_key):
     mux["reader_thread"] = nil
     mux["running"] = true
     mux["incoming_callback"] = nil
+    
+    # Rekeying context
+    mux["role"] = role
+    mux["local_keys"] = local_keys
+    mux["remote_pub"] = remote_pub
+    mux["rekey_threshold"] = nil
+    mux["rekeying"] = false
+    mux["rekey_mutex"] = thread.mutex()
+    mux["rekey_hs"] = nil
+    
+    # Pre-populate Control Stream "0"
+    mux["streams"]["0"] = create_stream(0, "CONTROL")
+    
     return mux
+
+proc to_list(b):
+    if b == nil:
+        return nil
+    end
+    let out = []
+    for i in range(len(b)):
+        push(out, b[i])
+    end
+    return out
+end
+
+proc zero_key(key):
+    if key != nil:
+        for i in range(len(key)):
+            key[i] = 0
+        end
+    end
+end
+
+proc is_rekey_message(plaintext):
+    if len(plaintext) < 3:
+        return false
+    end
+    let msg_type = plaintext[0]
+    let stream_id = plaintext[1] * 256 + plaintext[2]
+    if stream_id == 0:
+        if msg_type == REKEY_MSG1 or msg_type == REKEY_MSG2:
+            return true
+        end
+    end
+    return false
+end
 
 # Send a raw encrypted frame
 proc mux_send_frame(mux, plaintext):
+    let is_rekey = is_rekey_message(plaintext)
+    
+    # If it is a normal message and rekey is in progress, block until rekey is done
+    if not is_rekey:
+        while true:
+            thread.lock(mux["rekey_mutex"])
+            let rekeying = mux["rekeying"]
+            thread.unlock(mux["rekey_mutex"])
+            if not rekeying:
+                break
+            end
+            thread.sleep(0.005)
+        end
+    end
+
     thread.lock(mux["write_mutex"])
     let counter = mux["send_counter"]
     mux["send_counter"] = mux["send_counter"] + 1
     let ok = framing.write_frame(mux["sock"], mux["send_key"], counter, plaintext)
     thread.unlock(mux["write_mutex"])
+    
+    # Check if we should trigger rekey (only if threshold is set, we are initiator, and not already rekeying)
+    if ok and not is_rekey and mux["role"] == "initiator" and mux["rekey_threshold"] != nil:
+        thread.lock(mux["rekey_mutex"])
+        let should_rekey = (mux["send_counter"] >= mux["rekey_threshold"]) and not mux["rekeying"]
+        if should_rekey:
+            mux["rekeying"] = true
+        end
+        thread.unlock(mux["rekey_mutex"])
+        
+        if should_rekey:
+            proc run_rekey_async():
+                trigger_rekey(mux)
+            end
+            thread.spawn(run_rekey_async)
+        end
+    end
     return ok
+end
+
+proc trigger_rekey(mux):
+    print "Initiator: Triggering rekey process..."
+    let hs = noise_ik.initialize_handshake("initiator", mux["local_keys"], mux["remote_pub"])
+    mux["rekey_hs"] = hs
+    
+    let msg1 = noise_ik.write_message_1(hs, "rekey_msg1")
+    mux_send_msg(mux, 0, REKEY_MSG1, bytes(msg1))
+    
+    # The reader thread will receive REKEY_MSG2, process it, and clear mux["rekeying"] to false.
+    while true:
+        thread.lock(mux["rekey_mutex"])
+        let rekeying = mux["rekeying"]
+        thread.unlock(mux["rekey_mutex"])
+        if not rekeying:
+            break
+        end
+        thread.sleep(0.005)
+    end
+    print "Initiator: Rekey handshake finished and verified."
+end
+
+proc handle_rekey_responder(mux, payload_bytes):
+    thread.lock(mux["rekey_mutex"])
+    mux["rekeying"] = true
+    thread.unlock(mux["rekey_mutex"])
+    
+    print "Responder: Processing rekey request..."
+    let hs = noise_ik.initialize_handshake("responder", mux["local_keys"])
+    let msg1_list = to_list(payload_bytes)
+    let read1 = noise_ik.read_message_1(hs, msg1_list)
+    if read1 == nil:
+        print "Responder: Rekey failed to parse Msg 1"
+        thread.lock(mux["rekey_mutex"])
+        mux["rekeying"] = false
+        thread.unlock(mux["rekey_mutex"])
+        return
+    end
+    
+    let msg2 = noise_ik.write_message_2(hs, "rekey_msg2")
+    mux_send_msg(mux, 0, REKEY_MSG2, bytes(msg2))
+    
+    let new_keys = noise_ik.split_handshake(hs)
+    let old_send = mux["send_key"]
+    let old_recv = mux["recv_key"]
+    
+    thread.lock(mux["write_mutex"])
+    mux["send_key"] = new_keys["send"]
+    mux["send_counter"] = 0
+    thread.unlock(mux["write_mutex"])
+    
+    mux["recv_key"] = new_keys["recv"]
+    mux["recv_window"] = framing.replay_window.create_replay_window()
+    
+    zero_key(old_send)
+    zero_key(old_recv)
+    
+    print "Responder: Rekey completed successfully!"
+    thread.lock(mux["rekey_mutex"])
+    mux["rekeying"] = false
+    thread.unlock(mux["rekey_mutex"])
+end
 
 # Pack and send a message on a stream
 proc mux_send_msg(mux, stream_id, msg_type, payload):
@@ -99,6 +243,45 @@ proc mux_reader_loop(mux):
             push(payload, plaintext[i])
         end
         let payload_bytes = bytes(payload)
+        
+        if stream_id == 0:
+            if msg_type == REKEY_MSG1:
+                handle_rekey_responder(mux, payload_bytes)
+            else:
+                if msg_type == REKEY_MSG2:
+                    let hs = mux["rekey_hs"]
+                    if hs != nil:
+                        let msg2_list = to_list(payload_bytes)
+                        let read2 = noise_ik.read_message_2(hs, msg2_list)
+                        if read2 != nil:
+                            let new_keys = noise_ik.split_handshake(hs)
+                            let old_send = mux["send_key"]
+                            let old_recv = mux["recv_key"]
+                            
+                            thread.lock(mux["write_mutex"])
+                            mux["send_key"] = new_keys["send"]
+                            mux["send_counter"] = 0
+                            thread.unlock(mux["write_mutex"])
+                            
+                            mux["recv_key"] = new_keys["recv"]
+                            mux["recv_window"] = framing.replay_window.create_replay_window()
+                            
+                            zero_key(old_send)
+                            zero_key(old_recv)
+                            
+                            print "Initiator: Rekey completed successfully!"
+                        else:
+                            print "Initiator: Rekey failed to parse Msg 2"
+                        end
+                        mux["rekey_hs"] = nil
+                        thread.lock(mux["rekey_mutex"])
+                        mux["rekeying"] = false
+                        thread.unlock(mux["rekey_mutex"])
+                    end
+                end
+            end
+            continue
+        end
         
         thread.lock(mux["streams_mutex"])
         let stream = mux["streams"][str(stream_id)]
