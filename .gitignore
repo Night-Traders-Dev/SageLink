@@ -1,7 +1,11 @@
 sagelang-lib-crypto/
+crypto
 identity.key
 identity.pub
 peers.toml
+scratch*
+print_got.sage
+*.txt
 *.svm
 *.sgrv
 *.sgvm
