@@ -499,7 +499,7 @@ proc print_usage():
     print "  file_send <local_path> <remote_path> - Transfer a file"
 end
 
-proc main():
+proc cli_main():
     let args = sys.args()
     if len(args) < 3:
         print_usage()
@@ -545,4 +545,4 @@ proc main():
     end
 end
 
-main()
+cli_main()
