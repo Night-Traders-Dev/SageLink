@@ -9,6 +9,7 @@ import sagelink.handshake.noise_ik as noise_ik
 import sagelink.mux.stream as stream
 import sagelink.app.cmd as cmd
 import sagelink.app.file as file_app
+import sagelink.app.shell as shell_app
 
 proc to_list(b):
     if b == nil:
@@ -104,6 +105,12 @@ proc run_server():
             end
             thread.spawn(run_file)
         end
+        if s["service"] == "SHELL":
+            proc run_shell():
+                shell_app.handle_shell_stream(m, s)
+            end
+            thread.spawn(run_shell)
+        end
     end
     
     stream.start_mux_reader(mux, server_stream_dispatcher)
@@ -188,6 +195,50 @@ proc run_client():
         cmd.run_remote_cmd(mux, "rm test_recv.txt")
     else:
         print "Client: FILE TRANSFER FAILED!"
+    end
+    
+    # ── Test Interactive Shell Execution ──
+    print "Client: Opening SHELL stream..."
+    let shell_s = stream.mux_open_stream(mux, "SHELL")
+    if shell_s != nil:
+        # Wait a bit for shell to start
+        thread.sleep(0.5)
+        
+        # Write command to shell
+        let shell_cmd = "echo shell_test_confirm\n"
+        let cmd_payload = []
+        for i in range(len(shell_cmd)):
+            push(cmd_payload, ord(shell_cmd[i]))
+        end
+        stream.stream_write_msg(mux, shell_s, stream.SHELL_DATA, bytes(cmd_payload))
+        
+        # Read response
+        thread.sleep(0.5)
+        
+        thread.lock(shell_s["mutex"])
+        let q_len = len(shell_s["queue"])
+        thread.unlock(shell_s["mutex"])
+        
+        print "Client: Reading SHELL responses (queue size: " + str(q_len) + ")..."
+        while q_len > 0:
+            let msg = stream.stream_read_msg(shell_s)
+            if msg != nil and msg["msg_type"] == stream.SHELL_DATA:
+                let p = to_list(msg["payload"])
+                let s_out = ""
+                for i in range(len(p)):
+                    s_out = s_out + chr(p[i])
+                end
+                print "Client: Shell output chunk:\n" + s_out
+            end
+            thread.lock(shell_s["mutex"])
+            q_len = len(shell_s["queue"])
+            thread.unlock(shell_s["mutex"])
+        end
+        
+        stream.stream_close(mux, shell_s)
+        print "Client: SHELL stream closed."
+    else:
+        print "Client: Failed to open SHELL stream"
     end
     
     # Shut down mux
