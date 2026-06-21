@@ -3,20 +3,7 @@
 
 import thread
 import sagelink.mux.stream as stream
-
-# Helper function to convert raw bytes objects to standard lists
-proc to_list(b):
-    if b == nil:
-        return nil
-    end
-    if type(b) == "unknown":
-        let out = []
-        for i in range(len(b)):
-            push(out, b[i])
-        end
-        return out
-    end
-    return b
+import sagelink.utils as utils
 
 # Dedicated loop to read from PTY master and write to the multiplexed stream
 proc pty_to_stream_loop(master_fd, mux, s):
@@ -42,7 +29,7 @@ proc pty_to_stream_loop(master_fd, mux, s):
         end
         
         # Write to stream
-        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, bytes(data)):
+        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, utils.bytes(data)):
             break
         end
     end
@@ -151,7 +138,7 @@ proc handle_shell_stream(mux, s):
         end
         
         if msg["msg_type"] == stream.SHELL_DATA:
-            let payload = to_list(msg["payload"])
+            let payload = utils.to_list(msg["payload"])
             let count = len(payload)
             if count > 0:
                 let write_buf = mem_alloc(count)
@@ -164,7 +151,7 @@ proc handle_shell_stream(mux, s):
         end
         
         if msg["msg_type"] == stream.SHELL_RESIZE:
-            let payload = to_list(msg["payload"])
+            let payload = utils.to_list(msg["payload"])
             if len(payload) >= 4:
                 let rows = payload[0] * 256 + payload[1]
                 let cols = payload[2] * 256 + payload[3]
@@ -227,7 +214,7 @@ proc run_client_shell(mux):
             end
             
             if msg["msg_type"] == stream.SHELL_DATA:
-                let payload = to_list(msg["payload"])
+                let payload = utils.to_list(msg["payload"])
                 let count = len(payload)
                 if count > 0:
                     for i in range(count):
@@ -254,7 +241,7 @@ proc run_client_shell(mux):
             push(data, mem_read(read_buf, i, "byte"))
         end
         
-        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, bytes(data)):
+        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, utils.bytes(data)):
             break
         end
     end

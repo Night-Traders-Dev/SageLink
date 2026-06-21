@@ -3,6 +3,7 @@
 
 import sys
 import sagelink.mux.stream as stream
+import sagelink.utils as utils
 
 # Client function to run a command remotely
 # Returns a dict with "exit_code" and "output" (string)
@@ -17,7 +18,7 @@ proc run_remote_cmd(mux, cmd_string):
     for i in range(len(cmd_string)):
         push(payload, ord(cmd_string[i]))
     end
-    stream.stream_write_msg(mux, s, stream.CMD_EXEC, bytes(payload))
+    stream.stream_write_msg(mux, s, stream.CMD_EXEC, utils.bytes(payload))
     
     # Read CMD_RESULT response
     let msg = stream.stream_read_msg(s)
@@ -65,5 +66,5 @@ proc handle_cmd_stream(mux, s):
         push(resp, ord(output[i]))
     end
     
-    stream.stream_write_msg(mux, s, stream.CMD_RESULT, bytes(resp))
+    stream.stream_write_msg(mux, s, stream.CMD_RESULT, utils.bytes(resp))
     stream.stream_close(mux, s)

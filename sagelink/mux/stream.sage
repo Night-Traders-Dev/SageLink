@@ -4,6 +4,7 @@
 import thread
 import sagelink.transport.framing as framing
 import sagelink.handshake.noise_ik as noise_ik
+import sagelink.utils as utils
 
 # Msg Types
 let CHAN_OPEN = 0x01
@@ -51,17 +52,6 @@ proc create_mux(sock, send_key, recv_key, role = nil, local_keys = nil, remote_p
     mux["streams"]["0"] = create_stream(0, "CONTROL")
     
     return mux
-
-proc to_list(b):
-    if b == nil:
-        return nil
-    end
-    let out = []
-    for i in range(len(b)):
-        push(out, b[i])
-    end
-    return out
-end
 
 proc zero_key(key):
     if key != nil:
@@ -133,7 +123,7 @@ proc trigger_rekey(mux):
     mux["rekey_hs"] = hs
     
     let msg1 = noise_ik.write_message_1(hs, "rekey_msg1")
-    mux_send_msg(mux, 0, REKEY_MSG1, bytes(msg1))
+    mux_send_msg(mux, 0, REKEY_MSG1, utils.bytes(msg1))
     
     # The reader thread will receive REKEY_MSG2, process it, and clear mux["rekeying"] to false.
     while true:
@@ -155,7 +145,7 @@ proc handle_rekey_responder(mux, payload_bytes):
     
     print "Responder: Processing rekey request..."
     let hs = noise_ik.initialize_handshake("responder", mux["local_keys"])
-    let msg1_list = to_list(payload_bytes)
+    let msg1_list = utils.to_list(payload_bytes)
     let read1 = noise_ik.read_message_1(hs, msg1_list)
     if read1 == nil:
         print "Responder: Rekey failed to parse Msg 1"
@@ -166,7 +156,7 @@ proc handle_rekey_responder(mux, payload_bytes):
     end
     
     let msg2 = noise_ik.write_message_2(hs, "rekey_msg2")
-    mux_send_msg(mux, 0, REKEY_MSG2, bytes(msg2))
+    mux_send_msg(mux, 0, REKEY_MSG2, utils.bytes(msg2))
     
     let new_keys = noise_ik.split_handshake(hs)
     let old_send = mux["send_key"]
@@ -196,7 +186,7 @@ proc mux_send_msg(mux, stream_id, msg_type, payload):
     for i in range(len(payload)):
         push(msg, payload[i])
     end
-    return mux_send_frame(mux, bytes(msg))
+    return mux_send_frame(mux, utils.bytes(msg))
 
 proc create_stream(stream_id, service_type):
     let s = {}
@@ -242,7 +232,7 @@ proc mux_reader_loop(mux):
         for i in range(3, len(plaintext)):
             push(payload, plaintext[i])
         end
-        let payload_bytes = bytes(payload)
+        let payload_bytes = utils.bytes(payload)
         
         if stream_id == 0:
             if msg_type == REKEY_MSG1:
@@ -251,7 +241,7 @@ proc mux_reader_loop(mux):
                 if msg_type == REKEY_MSG2:
                     let hs = mux["rekey_hs"]
                     if hs != nil:
-                        let msg2_list = to_list(payload_bytes)
+                        let msg2_list = utils.to_list(payload_bytes)
                         let read2 = noise_ik.read_message_2(hs, msg2_list)
                         if read2 != nil:
                             let new_keys = noise_ik.split_handshake(hs)
@@ -338,7 +328,7 @@ proc mux_open_stream(mux, service_type):
     for i in range(len(service_type)):
         push(payload, ord(service_type[i]))
     end
-    mux_send_msg(mux, stream_id, CHAN_OPEN, bytes(payload))
+    mux_send_msg(mux, stream_id, CHAN_OPEN, utils.bytes(payload))
     return s
 
 # Read next message from a stream (blocks until message arrives or stream is closed)

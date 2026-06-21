@@ -5,20 +5,7 @@ import io
 import crypto.hash as hash
 import sagelink.mux.stream as stream
 import sagelink.transport.framing as framing
-
-# Helper function to convert raw bytes objects to standard lists
-proc to_list(b):
-    if b == nil:
-        return nil
-    end
-    if type(b) == "unknown":
-        let out = []
-        for i in range(len(b)):
-            push(out, b[i])
-        end
-        return out
-    end
-    return b
+import sagelink.utils as utils
 
 # Client function to send a file to the remote side
 # Returns true on success, false on failure
@@ -64,7 +51,7 @@ proc send_file(mux, local_path, remote_dest):
         push(meta_payload, file_hash[i])
     end
     
-    if not stream.stream_write_msg(mux, s, stream.FILE_META, bytes(meta_payload)):
+    if not stream.stream_write_msg(mux, s, stream.FILE_META, utils.bytes(meta_payload)):
         stream.stream_close(mux, s)
         return false
     end
@@ -85,7 +72,7 @@ proc send_file(mux, local_path, remote_dest):
                 return false
             end
             if msg["msg_type"] == stream.FILE_ACK:
-                acked_offset = framing.bytes_to_uint64(to_list(msg["payload"]))
+                acked_offset = framing.bytes_to_uint64(utils.to_list(msg["payload"]))
             end
         end
         
@@ -107,7 +94,7 @@ proc send_file(mux, local_path, remote_dest):
             push(chunk_payload, chunk_data[i])
         end
         
-        if not stream.stream_write_msg(mux, s, stream.FILE_CHUNK, bytes(chunk_payload)):
+        if not stream.stream_write_msg(mux, s, stream.FILE_CHUNK, utils.bytes(chunk_payload)):
             stream.stream_close(mux, s)
             return false
         end
@@ -122,7 +109,7 @@ proc send_file(mux, local_path, remote_dest):
         while queue_len > 0:
             let msg = stream.stream_read_msg(s)
             if msg != nil and msg["msg_type"] == stream.FILE_ACK:
-                acked_offset = framing.bytes_to_uint64(to_list(msg["payload"]))
+                acked_offset = framing.bytes_to_uint64(utils.to_list(msg["payload"]))
             end
             thread.lock(s["mutex"])
             queue_len = len(s["queue"])
@@ -137,7 +124,7 @@ proc send_file(mux, local_path, remote_dest):
             break
         end
         if msg["msg_type"] == stream.FILE_ACK:
-            acked_offset = framing.bytes_to_uint64(to_list(msg["payload"]))
+            acked_offset = framing.bytes_to_uint64(utils.to_list(msg["payload"]))
         end
     end
     
@@ -153,7 +140,7 @@ proc handle_file_stream(mux, s):
         return
     end
     
-    let meta_payload = to_list(msg["payload"])
+    let meta_payload = utils.to_list(msg["payload"])
     if len(meta_payload) < 2 + 8 + 32:
         stream.stream_close(mux, s)
         return
@@ -189,7 +176,7 @@ proc handle_file_stream(mux, s):
         end
         
         if chunk_msg["msg_type"] == stream.FILE_CHUNK:
-            let chunk_payload = to_list(chunk_msg["payload"])
+            let chunk_payload = utils.to_list(chunk_msg["payload"])
             if len(chunk_payload) < 8:
                 break
             end
@@ -205,7 +192,7 @@ proc handle_file_stream(mux, s):
                 
                 # Acknowledge the current cumulative offset
                 let ack_payload = framing.uint64_to_bytes(bytes_written)
-                stream.stream_write_msg(mux, s, stream.FILE_ACK, bytes(ack_payload))
+                stream.stream_write_msg(mux, s, stream.FILE_ACK, utils.bytes(ack_payload))
             else:
                 print "Error: Out-of-order chunk offset: " + str(offset) + " expected: " + str(bytes_written)
                 break

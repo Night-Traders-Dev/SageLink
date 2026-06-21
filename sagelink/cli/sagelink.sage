@@ -10,6 +10,7 @@ import sagelink.mux.stream as stream
 import sagelink.app.cmd as cmd
 import sagelink.app.file as file_app
 import sagelink.app.shell as shell_app
+import sagelink.utils as utils
 
 let B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
@@ -189,17 +190,6 @@ proc parse_peers_toml(content):
     return peers
 end
 
-proc to_list(b):
-    if b == nil:
-        return nil
-    end
-    let out = []
-    for i in range(len(b)):
-        push(out, b[i])
-    end
-    return out
-end
-
 proc keys_equal(k1, k2):
     if len(k1) != len(k2):
         return false
@@ -294,7 +284,7 @@ proc run_listen(port_str = nil):
             let bob_hs = noise_ik.initialize_handshake("responder", local_keys)
             
             # Read Msg 1 (expecting 128 bytes: 32 ephemeral + 48 encrypted static + 32 payload + 16 tag)
-            let msg1 = to_list(tcp.recvall(sock, 128, true))
+            let msg1 = utils.to_list(tcp.recvall(sock, 128, true))
             if msg1 == nil:
                 print "Error: Handshake failed to read Msg 1"
                 tcp.close(sock)
@@ -341,8 +331,8 @@ proc run_listen(port_str = nil):
                 push(resp_payload, 0)
             end
             
-            let msg2 = noise_ik.write_message_2(bob_hs, bytes(resp_payload))
-            tcp.sendall(sock, bytes(msg2))
+            let msg2 = noise_ik.write_message_2(bob_hs, utils.bytes(resp_payload))
+            tcp.sendall(sock, utils.bytes(msg2))
             
             let bob_transport = noise_ik.split_handshake(bob_hs)
             let mux = stream.create_mux(sock, bob_transport["send"], bob_transport["recv"], "responder", local_keys)
@@ -436,11 +426,11 @@ proc run_connect(peer_name, mode = nil, p1 = nil, p2 = nil):
         push(init_payload, 0)
     end
     
-    let msg1 = noise_ik.write_message_1(alice_hs, bytes(init_payload))
-    tcp.sendall(sock, bytes(msg1))
+    let msg1 = noise_ik.write_message_1(alice_hs, utils.bytes(init_payload))
+    tcp.sendall(sock, utils.bytes(msg1))
     
     # Read Msg 2 (expecting 80 bytes: 32 ephemeral + 32 payload + 16 tag)
-    let msg2 = to_list(tcp.recvall(sock, 80, true))
+    let msg2 = utils.to_list(tcp.recvall(sock, 80, true))
     if msg2 == nil:
         print "Error: Handshake failed to read Msg 2"
         tcp.close(sock)

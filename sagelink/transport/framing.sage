@@ -3,6 +3,7 @@
 
 import crypto.aead as aead
 import sagelink.transport.replay_window as replay_window
+import sagelink.utils as utils
 
 proc uint32_to_bytes(val):
     let b = [0, 0, 0, 0]
@@ -76,7 +77,7 @@ proc encrypt_frame(key, counter, plaintext):
         push(frame_bytes, payload[i])
     end
     
-    return bytes(frame_bytes)
+    return utils.bytes(frame_bytes)
 
 # Decrypts a frame payload (excluding the length prefix, which was read from the socket)
 proc decrypt_frame(key, window, frame_payload_bytes):
