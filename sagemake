@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""
+SageLink Unified Build System (sagemake)
+Build, test, and run orchestrator for the E2E encrypted protocol suite.
+"""
+
+import os
+import sys
+import subprocess
+import argparse
+import time
+import shutil
+from pathlib import Path
+
+VERSION = "0.1.0"
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+MAGENTA = "\033[35m"
+
+def banner(title):
+    w = shutil.get_terminal_size().columns
+    pad = (w - len(title) - 4) // 2
+    print()
+    print(f"{CYAN}{'─' * w}{RESET}")
+    print(f"{' ' * pad}{BOLD}{CYAN}{title}{RESET}")
+    print(f"{CYAN}{'─' * w}{RESET}")
+    print()
+
+def section(title):
+    print(f"\n  {BOLD}{CYAN}→{RESET} {BOLD}{title}{RESET}")
+
+def step(msg):
+    print(f"    {YELLOW}⚙{RESET} {msg:<50}", end="")
+    sys.stdout.flush()
+
+def ok(detail="done"):
+    print(f" {GREEN}✓{RESET} {GREEN}{detail}{RESET}")
+
+def fail(detail):
+    print(f" {RED}✗{RESET} {RED}{detail}{RESET}")
+    sys.exit(1)
+
+def warn(detail):
+    print(f" {YELLOW}!{RESET} {YELLOW}{detail}{RESET}")
+
+def run(cmd, **kw):
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
+    try:
+        return subprocess.run(cmd, **kw)
+    except FileNotFoundError:
+        return None
+
+def check_sage():
+    section("Checking for SageLang interpreter")
+    step("Looking for `sage`")
+    res = run(["sage", "--version"])
+    if res and res.returncode == 0:
+        ver = res.stdout.strip() or res.stderr.strip()
+        ok(ver)
+        return True
+    res2 = run(["which", "sage"])
+    if res2 and res2.returncode == 0:
+        ok("found")
+        return True
+    fail("SageLang interpreter not found. Install from https://github.com/Night-Traders-Dev/SageLang")
+    return False
+
+def cmd_build(args):
+    banner(f"SageLink v{VERSION} — Build")
+    check_sage()
+    cmd_check(args)
+    cmd_test(args)
+    banner("Build Complete")
+
+def cmd_check(args):
+    banner("Syntax Check")
+    check_sage()
+    section("Checking source files")
+    files = list(Path("src").rglob("*.sage")) + list(Path("Testing").rglob("*.sage"))
+    failed = 0
+    for f in sorted(files):
+        step(str(f))
+        res = run(["sage", "--lint", str(f)])
+        if res and res.returncode == 0:
+            ok("ok")
+        else:
+            failed += 1
+            warn("syntax error")
+    section("Result")
+    total = len(files)
+    passed = total - failed
+    if failed:
+        warn(f"{passed}/{total} passed, {failed} failed")
+    else:
+        ok(f"{passed}/{total} files passed")
+
+def cmd_test(args):
+    banner("Test Suite")
+    check_sage()
+    tests = {
+        "Crypto Primitives (RFC vectors)": "Testing/test_crypto.sage",
+        "Noise_IK Handshake":              "Testing/test_handshake.sage",
+        "Integration (CMD/FILE/SHELL)":   "Testing/test_integration.sage",
+    }
+    failed = 0
+    for label, path in tests.items():
+        section(label)
+        step("Running")
+        res = run(["sage", path])
+        if res and res.returncode == 0:
+            ok("passed")
+        else:
+            failed += 1
+            warn("failed")
+            if res and res.stderr:
+                print(f"      {DIM}{res.stderr.strip()}{RESET}")
+    section("Summary")
+    total = len(tests)
+    passed = total - failed
+    if failed:
+        warn(f"{passed}/{total} suites passed")
+    else:
+        ok(f"{passed}/{total} suites passed")
+    if failed:
+        sys.exit(1)
+
+def cmd_clean(args):
+    banner("Clean")
+    for pattern in ["*.txt", "*.svm", "*.sgrv", "*.sgvm", "identity.key", "identity.pub", "peers.toml"]:
+        for f in Path(".").glob(pattern):
+            step(f"Removing {f}")
+            f.unlink(missing_ok=True)
+            ok("removed")
+    banner("Clean Complete")
+
+def cmd_run(args):
+    banner("SageLink CLI")
+    check_sage()
+    if not args.args:
+        args.args = []
+    cmd = ["sage", "src/cli/sagelink.sage"] + args.args
+    print(f"  {DIM}{' '.join(cmd)}{RESET}\n")
+    os.execvp("sage", cmd)
+
+def cmd_info(args):
+    banner(f"SageLink v{VERSION}")
+    print(f"  {BOLD}Repository:{RESET}   https://github.com/Night-Traders-Dev/SageLink")
+    print(f"  {BOLD}Language:{RESET}     SageLang")
+    print(f"  {BOLD}Location:{RESET}     {Path('.').resolve()}")
+    print()
+    section("Source modules")
+    for f in sorted(Path("src").rglob("*.sage")):
+        sz = f.stat().st_size
+        print(f"    {CYAN}{f}{RESET} ({sz} bytes)")
+    print()
+    section("Tests")
+    for f in sorted(Path("Testing").glob("*.sage")):
+        sz = f.stat().st_size
+        print(f"    {CYAN}{f}{RESET} ({sz} bytes)")
+    print()
+    section("Documentation")
+    for f in sorted(Path("docs").glob("*.md")):
+        print(f"    {CYAN}{f}{RESET}")
+    print()
+
+def main():
+    parser = argparse.ArgumentParser(description="SageLink Build System")
+    parser.add_argument("command", nargs="?", default="info",
+                        help="Command: build, test, check, clean, run, info, all")
+    parser.add_argument("args", nargs=argparse.REMAINDER,
+                        help="Arguments passed through to sage CLI")
+
+    args = parser.parse_args()
+
+    commands = {
+        "build":  cmd_build,
+        "test":   cmd_test,
+        "check":  cmd_check,
+        "clean":  cmd_clean,
+        "run":    cmd_run,
+        "info":   cmd_info,
+        "all":    lambda a: (cmd_check(a), cmd_test(a), banner("All Complete")),
+    }
+
+    fn = commands.get(args.command)
+    if fn:
+        fn(args)
+    else:
+        print(f"  {RED}Unknown command:{RESET} {args.command}")
+        print(f"  Commands: {', '.join(commands.keys())}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
