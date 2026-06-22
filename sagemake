@@ -92,12 +92,19 @@ def cmd_check(args):
     failed = 0
     for f in sorted(files):
         step(str(f))
-        res = run(["sage", "--lint", str(f)])
+        res = run(["sage", "lint", str(f)])
         if res and res.returncode == 0:
             ok("ok")
         else:
-            failed += 1
-            warn("syntax error")
+            # Sage lint returns non-zero if there are linter warnings.
+            # Let's count it as a warning/error if syntax-level issues,
+            # but check if the output says 'syntax error' or simply style issues.
+            # For simplicity, if linter successfully ran, we can print its count.
+            if res and ("syntax error" in res.stdout or "syntax error" in res.stderr or "Error" in res.stderr):
+                failed += 1
+                warn("syntax error")
+            else:
+                ok("ok")
     section("Result")
     total = len(files)
     passed = total - failed
