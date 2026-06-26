@@ -193,6 +193,7 @@ proc create_stream(stream_id, service_type):
     s["id"] = stream_id
     s["service"] = service_type
     s["queue"] = []
+    s["queue_head"] = 0
     s["mutex"] = thread.mutex()
     s["closed"] = false
     return s
@@ -216,6 +217,10 @@ proc mux_reader_loop(mux):
                 end
             end
             thread.unlock(mux["streams_mutex"])
+
+            thread.lock(mux["rekey_mutex"])
+            mux["rekeying"] = false
+            thread.unlock(mux["rekey_mutex"])
             break
         end
         
@@ -318,7 +323,25 @@ proc start_mux_reader(mux, incoming_callback = nil):
 proc mux_open_stream(mux, service_type):
     thread.lock(mux["streams_mutex"])
     let stream_id = mux["next_stream_id"]
-    mux["next_stream_id"] = mux["next_stream_id"] + 1
+
+    let attempts = 0
+    while stream_id == 0 or mux["streams"][str(stream_id)] != nil:
+        stream_id = stream_id + 1
+        if stream_id >= 65536:
+            stream_id = 1
+        end
+        attempts = attempts + 1
+        if attempts >= 65536:
+            thread.unlock(mux["streams_mutex"])
+            return nil
+        end
+    end
+
+    mux["next_stream_id"] = stream_id + 1
+    if mux["next_stream_id"] >= 65536:
+        mux["next_stream_id"] = 1
+    end
+
     let s = create_stream(stream_id, service_type)
     mux["streams"][str(stream_id)] = s
     thread.unlock(mux["streams_mutex"])
@@ -335,14 +358,20 @@ proc mux_open_stream(mux, service_type):
 proc stream_read_msg(s):
     while true:
         thread.lock(s["mutex"])
-        if len(s["queue"]) > 0:
-            let msg = s["queue"][0]
-            # shift element
-            let new_q = []
-            for i in range(1, len(s["queue"])):
-                push(new_q, s["queue"][i])
+        if len(s["queue"]) > s["queue_head"]:
+            let msg = s["queue"][s["queue_head"]]
+            s["queue_head"] = s["queue_head"] + 1
+
+            # compact to avoid unbounded growth
+            if s["queue_head"] >= 1024:
+                let new_q = []
+                for i in range(s["queue_head"], len(s["queue"])):
+                    push(new_q, s["queue"][i])
+                end
+                s["queue"] = new_q
+                s["queue_head"] = 0
             end
-            s["queue"] = new_q
+
             thread.unlock(s["mutex"])
             return msg
         end

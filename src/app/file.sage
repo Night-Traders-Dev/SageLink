@@ -103,7 +103,7 @@ proc send_file(mux, local_path, remote_dest):
         
         # Drain any pending ACKs from the queue non-blockingly
         thread.lock(s["mutex"])
-        let queue_len = len(s["queue"])
+        let queue_len = len(s["queue"]) - s["queue_head"]
         thread.unlock(s["mutex"])
         
         while queue_len > 0:
@@ -112,7 +112,7 @@ proc send_file(mux, local_path, remote_dest):
                 acked_offset = framing.bytes_to_uint64(utils.to_list(msg["payload"]))
             end
             thread.lock(s["mutex"])
-            queue_len = len(s["queue"])
+            queue_len = len(s["queue"]) - s["queue_head"]
             thread.unlock(s["mutex"])
         end
     end
@@ -152,9 +152,22 @@ proc handle_file_stream(mux, s):
         return
     end
     
-    let filename = ""
+    let filename_raw = ""
     for i in range(filename_len):
-        filename = filename + chr(meta_payload[2 + i])
+        filename_raw = filename_raw + chr(meta_payload[2 + i])
+    end
+
+    let filename = ""
+    for i in range(len(filename_raw)):
+        let c = filename_raw[i]
+        if c == "/" or c == "\\":
+            filename = ""
+        else:
+            filename = filename + c
+        end
+    end
+    if filename == "":
+        filename = "downloaded_file"
     end
     
     let size_start = 2 + filename_len

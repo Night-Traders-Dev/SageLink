@@ -116,6 +116,8 @@ proc decrypt_frame(key, window, frame_payload_bytes):
         return nil
     end
     
+    replay_window.commit_replay(window, counter)
+
     return {"plaintext": decrypted, "counter": counter}
 
 # Helper to read one full decrypted frame from a socket
@@ -129,6 +131,9 @@ proc read_frame(sock, key, window):
     
     let len_val = bytes_to_uint32(len_raw)
     if len_val < 8 + 16:
+        return nil
+    end
+    if len_val > 1048576: # 1MB limit
         return nil
     end
     
