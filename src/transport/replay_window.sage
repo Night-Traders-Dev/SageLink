@@ -17,9 +17,29 @@ proc check_replay(w, counter):
     end
     
     if w["max_seen"] == -1:
+        return true
+    end
+
+    if counter > w["max_seen"]:
+        return true
+    end
+
+    let diff = w["max_seen"] - counter
+    if diff >= 64:
+        return false
+    end
+
+    if w["bitmap"][diff]:
+        return false
+    end
+
+    return true
+
+proc commit_replay(w, counter):
+    if w["max_seen"] == -1:
         w["max_seen"] = counter
         w["bitmap"][0] = true
-        return true
+        return
     end
     
     if counter > w["max_seen"]:
@@ -40,17 +60,12 @@ proc check_replay(w, counter):
         end
         w["max_seen"] = counter
         w["bitmap"][0] = true
-        return true
+        return
     end
     
     let diff = w["max_seen"] - counter
     if diff >= 64:
-        return false
-    end
-    
-    if w["bitmap"][diff]:
-        return false
+        return
     end
     
     w["bitmap"][diff] = true
-    return true
