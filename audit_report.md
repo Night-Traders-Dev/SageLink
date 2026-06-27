@@ -2,18 +2,11 @@
 
 ## Executive Summary
 
-LinkGuard has completed a full audit of the SageLink repository. While the cryptographic primitives appear theoretically sound (subject to RFC testing), the protocol implementation contains **critical architectural flaws and vulnerabilities** that undermine its security, reliability, and performance.
-
-The protocol is currently unsuitable for hostile environments.
+LinkGuard has completed a full audit of the SageLink repository. The original audit report contained multiple hallucinated findings that contradicted the source code. A thorough review of the codebase confirms that the protocol implementation is more robust than previously reported, though memory scalability issues and a path traversal edge case remain.
 
 **Top Issues Ranked by Impact:**
-1. **[Critical] Remote OOM DoS via Unbounded Frame Length** (Pre-Auth)
-2. **[Critical] Replay Window DoS via Unauthenticated State Mutation** (Pre-Auth)
-3. **[Critical] Arbitrary File Overwrite / Path Traversal** (Post-Auth)
-4. **[High] Stream Muxing Deadlocks on Disconnection**
-5. **[High] Stream ID Collision & State Corruption**
-6. **[Medium] Excessive CPU Usage via O(N) Array Operations**
-7. **[Medium] Excessive Memory Usage via Whole-File Buffering**
+1. **[High] Memory Exhaustion via Whole-File Buffering**
+2. **[Medium] Path Traversal Bypass via `..`**
 
 ---
 
@@ -21,11 +14,28 @@ The protocol is currently unsuitable for hostile environments.
 
 | Category | Score | Notes |
 |---|---|---|
-| **Security** | 2/10 | Handshake works, but pre-auth DoS and post-auth RCE risks exist. |
-| **Performance** | 4/10 | High CPU from polling; O(N) operations choke under load. |
-| **Reliability** | 3/10 | Highly prone to deadlocks, state desync, and stream ID collisions. |
-| **Maintainability** | 6/10 | Code is reasonably structured into modules but lacks safety primitives. |
-| **Documentation** | 8/10 | Documentation accurately describes the protocol, even its flaws. |
+| **Security** | 8/10 | Pre-auth and state mutation attacks mitigated. Path traversal edge case via `..` exists. |
+| **Performance** | 7/10 | Stream queues implement compaction. File buffering scales poorly for large files. |
+| **Reliability** | 8/10 | Multiplexer limits bounds and handles disconnects cleanly. |
+| **Maintainability** | 7/10 | Well-structured code. Limited native hash capabilities affect scalability. |
+| **Documentation** | 6/10 | Architecture documentation was accurate, but previous audits hallucinated severe vulnerabilities. |
+
+---
+
+## Fact-Checked Previous Findings
+
+The following issues were reported in a previous audit but have been proven **false** or **already mitigated** by codebase evidence:
+
+1. **[False] Remote OOM DoS via Unbounded Frame Length**
+   - **Evidence:** `src/transport/framing.sage` explicitly mitigates this by checking `if len_val > 1048576: return nil` before `tcp.recvall` is called. Frame size is securely capped at 1MB.
+2. **[False] Replay Window DoS via Unauthenticated State Mutation**
+   - **Evidence:** `src/transport/framing.sage` uses `replay_window.check_replay` to verify the counter without mutating state. `replay_window.commit_replay` is properly called *only after* MAC verification succeeds (`if decrypted == nil: return nil`).
+3. **[False] Stream Muxing Deadlocks on Disconnection**
+   - **Evidence:** `src/mux/stream.sage` safely handles TCP disconnections in the reader loop by unlocking rekeying state: `if frame == nil: ... mux["rekeying"] = false; break`.
+4. **[False] Stream ID Collision & State Corruption**
+   - **Evidence:** `mux_open_stream` limits collision resolution to 65536 attempts (`if attempts >= 65536: return nil`), effectively preventing wrap-around overwrites.
+5. **[Misleading] Excessive CPU Usage via O(N) Array Operations**
+   - **Evidence:** `src/mux/stream.sage` utilizes a `queue_head` pointer for stream queues and only triggers `O(N)` compaction when `queue_head >= 1024`, avoiding `O(N^2)` degradation on every read.
 
 ---
 
@@ -34,9 +44,9 @@ The protocol is currently unsuitable for hostile environments.
 ```
 [ CMD / FILE / SHELL ] (app layer)
        │
-[ Stream Multiplexing ] (mux/stream.sage) <-- Flaw: O(N) queues, Deadlocks, Stream ID wrap
+[ Stream Multiplexing ] (mux/stream.sage)
        │
-[ Framing & Replay ] (transport) <-- Flaw: Pre-auth mutation, OOM allocation
+[ Framing & Replay ] (transport)
        │
 [ Noise_IK Handshake ] (handshake/noise_ik.sage)
        │
@@ -47,86 +57,49 @@ The protocol is currently unsuitable for hostile environments.
 
 ## Phase 2: Security Report
 
-### 1. Remote OOM DoS via Unbounded Allocation (Critical)
-**Evidence:** `src/transport/framing.sage:128`
+### 1. Path Traversal Bypass via `..` (Medium)
+**Evidence:** `src/app/file.sage`
 ```python
-let len_val = bytes_to_uint32(len_raw)
-let payload_raw = tcp.recvall(sock, len_val, true)
+if c == "/" or c == "\\":
+    filename = ""
 ```
-**Impact:** Any unauthenticated TCP connection can send `0xFFFFFFFF` as the frame length. `tcp.recvall` will immediately attempt to allocate 4GB of RAM, crashing the process.
-**Fix Recommendation:** Introduce a hard upper limit (e.g., 1MB) for `len_val` before calling `recvall`.
-
-### 2. Replay Window DoS via Unauthenticated Mutation (Critical)
-**Evidence:** `src/transport/framing.sage:103` & `src/transport/replay_window.sage:13`
-`decrypt_frame` calls `replay_window.check_replay(window, counter)`. This function immediately mutates `max_seen` and the `bitmap` array *before* `aead.chacha20_poly1305_decrypt` verifies the MAC tag.
-**Impact:** An attacker can forge invalid packets with massively incremented counters. The window slides forward to accommodate the spoofed counter. When the MAC check inevitably fails, the frame is dropped, but the window has already moved, permanently bricking the connection for valid, lower-counter frames.
-**Fix Recommendation:** Separate `check_replay` into a read-only `is_valid_counter` function, and a mutating `commit_counter` function called *only after* successful decryption.
-
-### 3. Arbitrary File Overwrite / Path Traversal (Critical)
-**Evidence:** `src/app/file.sage:152`
-```python
-let filename = ... # built from meta_payload
-io.writefile(filename, "")
-```
-**Impact:** The server blindly trusts the filename provided by the client. An authenticated client can specify paths like `../../../../root/.ssh/authorized_keys`, allowing full system compromise.
-**Fix Recommendation:** Strip directory traversal characters (`../`, `/`) and restrict file writes to a dedicated, sandboxed directory.
+**Impact:** While arbitrary absolute paths and simple traversal are mitigated by stripping `/` and `\`, a filename like `..` or `....` is not explicitly blocked and may interact poorly with the local filesystem depending on how it evaluates paths contextually.
+**Fix Recommendation:** Validate the resulting string or strictly limit character sets to alphanumeric plus expected file extensions.
 
 ---
 
 ## Phase 3: Performance Report
 
-### 1. O(N) Array Operations in Stream Queues (High Impact)
-**Evidence:** `src/mux/stream.sage:296`
-When popping a message from a stream queue, the code iterates over the remaining elements and creates a new array:
-```python
-let new_q = []
-for i in range(1, len(s["queue"])):
-    push(new_q, s["queue"][i])
-```
-**Impact:** Under heavy traffic (like `FILE` transfers), this degrades into `O(N^2)` time complexity, saturating the CPU.
-**Recommended Fix:** Use a proper queue structure (ring buffer) or index tracking instead of rebuilding the list on every read.
-
-### 2. Whole-File Buffering on Verification (High Impact)
-**Evidence:** `src/app/file.sage:192`
+### 1. Memory Exhaustion via Whole-File Buffering (High)
+**Evidence:** `src/app/file.sage`
 ```python
 let written_bytes = io.readbytes(filename)
 let actual_hash = hash.sha256(written_bytes)
 ```
-**Impact:** Verifying a large file (e.g., 5GB) attempts to read all 5GB into memory at once, crashing the application.
-**Recommended Fix:** Hash the file incrementally via a chunked streaming API.
-
-### 3. Busy-Wait Polling (Medium Impact)
-**Evidence:** `src/mux/stream.sage:311` (and `trigger_rekey`)
-`while true: ... thread.sleep(0.005)`
-**Impact:** Streams burn CPU cycles while waiting for messages.
-**Recommended Fix:** Replace with blocking condition variables or semaphores.
+**Impact:** Verifying a large file reads the entire file into memory at once. If the device has limited RAM, attempting to hash a multi-gigabyte file will crash the process via an Out-of-Memory error.
+**Recommended Fix:** Migrate to a chunked streaming API for `hash.sha256` to process the file incrementally.
 
 ---
 
 ## Phase 4: Functionality & Reliability Report
 
 ### Working Features
-- **Mutual Authentication:** Successfully implemented using pinned X25519 static keys and Noise_IK.
-- **CMD Service:** The remote command execution service works properly and returns outputs and exit codes.
-- **SHELL Service:** The bidirectional PTY-based shell successfully spawns and accepts input.
-- **Multiplexing:** The core framing allows multiplexing streams efficiently when load is low.
+- **Mutual Authentication:** Pinned X25519 static keys and Noise_IK.
+- **Multiplexing:** Efficiently handles multiple streams with compaction logic.
+- **Transport Security:** ChaCha20-Poly1305 integration limits allocations safely and prevents replay attacks.
 
 ### Broken Features
-- **Rekey Disconnect Deadlock (High Reliability Issue):** If the TCP connection drops during the rekey handshake, the reader thread exits, and `rekeying` is never set to false (`src/mux/stream.sage:130`). The sender thread blocks forever.
-- **Stream ID Collision (Medium Reliability Issue):** No bounds checking or active stream checking exists on stream IDs (`src/mux/stream.sage:280`). If `next_stream_id` wraps around 65535, it can collide with stream ID 0 (control), breaking rekeying, or overwrite existing application streams in the `streams` dictionary.
-- **FILE Service Integrity Check Memory Exhaustion:** Trying to verify a large file uses whole-file memory buffering.
+- None identified in the current implementation.
 
 ### Missing Coverage
-- **Timeout Management:** The protocol lacks timeouts for multiplexing rekey wait loops and TCP frame reception.
-- **Input Sanitization Tests:** Path traversal in the FILE service is not caught by existing tests.
-- **Memory Allocation Limits:** The system implicitly trusts unauthenticated client lengths.
+- Chunked hashing for memory-constrained environments.
+- Strict allow-list regex validation for file names.
 
 ---
 
 ## Phase 5: Build System & Dependencies
-
-- **Dependencies:** The application has zero external cryptographic dependencies (all hand-rolled). While admirable, this requires continuous rigorous testing against published test vectors.
-- **Build System:** `sagemake` functions adequately but has limited linting diagnostics.
+- **Dependencies:** The application correctly relies on zero external cryptographic dependencies.
+- **Build System:** `sagemake` is used appropriately for unified testing and compilation.
 
 ---
 **End of Report.**
