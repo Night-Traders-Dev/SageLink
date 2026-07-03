@@ -9,10 +9,13 @@ The protocol implementation is largely robust, correctly implementing Noise_IK h
 However, two legitimate issues were identified and confirmed via codebase evidence.
 
 **Top 10 Issues Ranked by Impact:**
-1. **[High]** Memory Exhaustion via Whole-File Buffering
-2. **[Medium]** Path Traversal Bypass via `..`
-3. **[Medium]** Multiplexer ID Resolution CPU Overhead (O(N))
-4. **[Low]** List Copying Overhead in loops
+1. **[High]** File Integrity Bypass & Overwrite
+2. **[High]** Memory Exhaustion via Whole-File Buffering
+3. **[Medium]** Insecure File Creation (Race Condition)
+4. **[Medium]** Path Traversal Bypass via `..`
+5. **[Medium]** Multiplexer ID Resolution CPU Overhead (O(N))
+6. **[Low]** I/O Performance Bottleneck on File Transfer
+7. **[Low]** List Copying Overhead in loops
 
 ---
 
@@ -20,8 +23,8 @@ However, two legitimate issues were identified and confirmed via codebase eviden
 
 | Category | Score | Notes |
 |---|---|---|
-| **Security** | 8/10 | Pre-auth and state mutation attacks mitigated. Path traversal edge case via `..` exists. |
-| **Performance** | 7/10 | Stream queues implement compaction. File buffering scales poorly for large files. CPU overhead in loops. |
+| **Security** | 6/10 | Pre-auth and state mutation attacks mitigated. Path traversal edge case via `..` exists. Integrity bypass and race condition issues found. |
+| **Performance** | 6/10 | Stream queues implement compaction. File buffering and excessive append cycles scales poorly for large files. CPU overhead in loops. |
 | **Reliability** | 8/10 | Multiplexer handles disconnections cleanly and bounds checking is in place. |
 | **Maintainability** | 7/10 | Well-structured code. Custom implementations are easy to read but lack built-in optimizations. |
 | **Documentation** | 6/10 | Architecture documentation is generally accurate, but previous audits hallucinated severe vulnerabilities. |
@@ -30,7 +33,30 @@ However, two legitimate issues were identified and confirmed via codebase eviden
 
 ## Security Report
 
-**1. Path Traversal Bypass via `..`**
+**1. File Integrity Bypass & Overwrite**
+- **Severity:** High
+- **Findings:** A malicious client can bypass the final `bytes_written == file_size` integrity and hash check block entirely by sending a file chunk that pushes `bytes_written` strictly greater than `file_size`, causing the loop to exit without checking the hash and leaving the manipulated file in place.
+- **Evidence:** `src/app/file.sage` line 186-189
+  ```python
+  while bytes_written < file_size:
+      # ... reads chunk and appends it ...
+
+  if bytes_written == file_size: # Misses the > condition
+      # ... verify hash ...
+  ```
+- **Fix Recommendation:** Change the condition to `if bytes_written >= file_size` or handle the `>` case explicitly to delete the invalid file.
+
+**2. Insecure File Creation (Race Condition)**
+- **Severity:** Medium
+- **Findings:** `identity.key` is created with open permissions before `chmod 600` is applied, causing a TOCTOU race condition where another process can read the key before the permissions are tightened.
+- **Evidence:** `src/cli/sagelink.sage` line 203
+  ```python
+  io.writefile("identity.key", priv_b64 + "\n")
+  sys.shell_exec("chmod 600 identity.key")
+  ```
+- **Fix Recommendation:** Set umask before writing the file or use a secure file creation API.
+
+**3. Path Traversal Bypass via `..`**
 - **Severity:** Medium
 - **Findings:** The filename sanitization logic relies solely on removing `/` and `\` characters.
 - **Evidence:** `src/app/file.sage` line 144
@@ -53,12 +79,17 @@ However, two legitimate issues were identified and confirmed via codebase eviden
 - **Estimated impact:** High risk of Out-of-Memory (OOM) crashes on constrained devices when transferring large files.
 - **Recommended fixes:** Introduce or utilize a chunked, incremental hashing API for `hash.sha256` in SageLang to process file chunks without loading the entire payload into RAM at once.
 
-**2. Multiplexer ID Resolution CPU Overhead**
+**2. I/O Performance Bottleneck on File Transfer**
+- **Bottleneck:** File chunks are incrementally appended via `io.appendbytes` during receive.
+- **Estimated impact:** Low-to-Medium risk of severely degrading transfer speeds for large files due to repeated open/write/close syscalls for every chunk.
+- **Recommended fixes:** Keep a file handle open during the transfer or buffer larger chunks in memory before writing to disk.
+
+**3. Multiplexer ID Resolution CPU Overhead**
 - **Bottleneck:** Stream ID assignment uses a linear probe with up to 65536 retries in `mux_open_stream`.
 - **Estimated impact:** While it avoids collisions, this is an O(N) algorithm that can degrade CPU performance if many streams are concurrently open.
 - **Recommended fixes:** Use a hash map, incrementing free-list, or tracking array instead of linear search collision handling.
 
-**3. List Copying Overhead**
+**4. List Copying Overhead**
 - **Bottleneck:** Extensive O(N) loops copying elements byte-by-byte into arrays in the transport and mux layer.
 - **Estimated impact:** Low-to-Medium CPU overhead during high-throughput file transfers.
 - **Recommended fixes:** Utilize native bulk memory copying operations if supported by the SageLang compiler or optimize list concatenations.
