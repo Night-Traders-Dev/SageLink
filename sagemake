@@ -12,7 +12,7 @@ import time
 import shutil
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -82,7 +82,36 @@ def cmd_build(args):
     check_sage()
     cmd_check(args)
     cmd_test(args)
+    cmd_compile(args)
     banner("Build Complete")
+
+def cmd_compile(args):
+    banner("Compile Native Binaries")
+    check_sage()
+    os.makedirs("build", exist_ok=True)
+    targets = ["x86_64", "aarch64", "rv64"]
+    failed = 0
+    for target in targets:
+        section(f"Compiling for {target}")
+        output = f"build/sagelink-{target}"
+        step(f"Target: {target}")
+        res = run(["sage", "--compile-native", "src/cli/sagelink.sage", "-o", output, "--target", target, "-O3"])
+        if res and res.returncode == 0:
+            ok("compiled")
+        else:
+            failed += 1
+            warn("failed")
+            if res and res.stderr:
+                print(f"      {DIM}{res.stderr.strip()}{RESET}")
+    section("Compilation Summary")
+    total = len(targets)
+    passed = total - failed
+    if failed:
+        warn(f"{passed}/{total} targets compiled")
+    else:
+        ok(f"{passed}/{total} targets compiled")
+    if failed:
+        sys.exit(1)
 
 def cmd_check(args):
     banner("Syntax Check")
@@ -185,20 +214,21 @@ def cmd_info(args):
 def main():
     parser = argparse.ArgumentParser(description="SageLink Build System")
     parser.add_argument("command", nargs="?", default="info",
-                        help="Command: build, test, check, clean, run, info, all")
+                        help="Command: build, test, check, clean, run, info, compile, all")
     parser.add_argument("args", nargs=argparse.REMAINDER,
                         help="Arguments passed through to sage CLI")
 
     args = parser.parse_args()
 
     commands = {
-        "build":  cmd_build,
-        "test":   cmd_test,
-        "check":  cmd_check,
-        "clean":  cmd_clean,
-        "run":    cmd_run,
-        "info":   cmd_info,
-        "all":    lambda a: (cmd_check(a), cmd_test(a), banner("All Complete")),
+        "build":   cmd_build,
+        "test":    cmd_test,
+        "check":   cmd_check,
+        "clean":   cmd_clean,
+        "run":     cmd_run,
+        "info":    cmd_info,
+        "compile": cmd_compile,
+        "all":     lambda a: (cmd_check(a), cmd_test(a), cmd_compile(a), banner("All Complete")),
     }
 
     fn = commands.get(args.command)

@@ -1,4 +1,4 @@
-# SageLink v0.1.0
+# SageLink v0.2.0
 
 SageLink — an E2E encrypted protocol suite built on SageLang.
 
@@ -11,7 +11,7 @@ transport over multiplexed streams.
 ## Version
 
 ```
-0.1.0
+0.2.0
 ```
 
-Release date: 2026-06-21
+Release date: 2026-07-05

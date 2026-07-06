@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.0 (2026-07-05)
+
+### Features
+- **Cross-Compilation**: Added `compile` command to `sagemake` to compile SageLink natively for `x86_64`, `aarch64`, and `rv64` architectures.
+- Fixed infinite hang in `Integration (CMD/FILE/SHELL)` test caused by incorrect `q_len` calculation in `stream_read_msg` loop.
+
 ## v0.1.0 (2026-06-21)
 
 Initial release of SageLink — an E2E encrypted protocol suite built on

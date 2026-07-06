@@ -223,7 +223,7 @@ proc run_client():
         thread.sleep(0.5)
         
         thread.lock(shell_s["mutex"])
-        let q_len = len(shell_s["queue"])
+        let q_len = len(shell_s["queue"]) - shell_s["queue_head"]
         thread.unlock(shell_s["mutex"])
         
         print "Client: Reading SHELL responses (queue size: " + str(q_len) + ")..."
@@ -238,7 +238,7 @@ proc run_client():
                 print "Client: Shell output chunk:\n" + s_out
             end
             thread.lock(shell_s["mutex"])
-            q_len = len(shell_s["queue"])
+            q_len = len(shell_s["queue"]) - shell_s["queue_head"]
             thread.unlock(shell_s["mutex"])
         end
         
