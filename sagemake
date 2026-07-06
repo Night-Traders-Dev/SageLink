@@ -55,6 +55,8 @@ def run(cmd, **kw):
     env = kw.pop("env", None) or os.environ.copy()
     env.setdefault("SAGE_PATH",
         str(Path("sagelang-lib-crypto").resolve()) + ":" +
+        str(Path("sagelang-lib-gc").resolve()) + ":" +
+        str(Path("src").resolve()) + ":" +
         str(Path(".").resolve()))
     kw["env"] = env
     try:
@@ -66,11 +68,6 @@ def check_sage():
     section("Checking for SageLang interpreter")
     step("Checking `sage` version")
     
-    # Prepend local SageLang build if available (helpful for testing)
-    local_sage = Path.home() / "Devel" / "sagelang" / "core"
-    if local_sage.exists() and (local_sage / "sage").exists():
-        os.environ["PATH"] = str(local_sage) + os.pathsep + os.environ.get("PATH", "")
-        
     res = run(["sage", "-c", "import sys\nprint sys.version"])
     if res and res.returncode == 0:
         ver = res.stdout.strip()

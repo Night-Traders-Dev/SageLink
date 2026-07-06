@@ -108,6 +108,7 @@ sage sagelink/cli/sagelink.sage connect pi4 shell
 - [Architecture](docs/architecture.md)
 - [Handshake Protocol](docs/handshake.md)
 - [Transport Layer](docs/transport.md)
+- [Benchmarks](docs/benchmarks.md)
 - [Stream Multiplexing](docs/multiplexing.md)
 - [Application Services](docs/services.md)
 - [CLI Reference](docs/cli.md)
