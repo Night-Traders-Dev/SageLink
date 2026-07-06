@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 (2026-07-05)
+
+### Features
+- **SageLang 4.0.2 Support**: Updated SageLink to require SageLang v4.0.2+, which includes critical fixes to the AOT backend.
+- **Benchmarking**: Added `sagemake benchmark` command to compare performance between Native ELF (AOT) and SageVM compilation targets.
+
 ## v0.2.0 (2026-07-05)
 
 ### Features

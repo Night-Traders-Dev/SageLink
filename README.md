@@ -22,6 +22,32 @@ Threat Model:    Hostile LAN/WiFi, active MITM, passive eavesdropping
 - **Zero FFI** in the crypto layer (only `/dev/urandom` via syscall for ephemeral key generation)
 - **RFC Test-Vector Gated** — no primitive is trusted until it passes published test vectors byte-for-byte
 - **Cross-Compilation** — natively compile binaries for `x86_64`, `aarch64`, and `rv64` architectures
+
+## Requirements
+
+- **SageLang**: `v4.0.2` or higher (Includes unified CLI & AOT backend fixes)
+- **SageVM**: `v0.9.8` or higher (For VM-based execution)
+- **OS**: Linux / macOS / SageOS
+- **Memory**: Minimal footprint (ideal for embedded and routers)
+
+## Build System
+
+SageLink uses a unified build orchestrator (`sagemake`).
+
+```bash
+# Check environment and setup
+./sagemake check
+
+# Build for VM
+./sagemake cross-build
+
+# Run the test suite
+./sagemake test
+
+# Run the benchmark suite (Native AOT vs SageVM)
+./sagemake benchmark
+```
+
 ## Architecture
 
 ```

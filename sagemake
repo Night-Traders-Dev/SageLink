@@ -12,7 +12,7 @@ import time
 import shutil
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -64,17 +64,23 @@ def run(cmd, **kw):
 
 def check_sage():
     section("Checking for SageLang interpreter")
-    step("Looking for `sage`")
-    res = run(["sage", "--version"])
+    step("Checking `sage` version")
+    
+    # Prepend local SageLang build if available (helpful for testing)
+    local_sage = Path.home() / "Devel" / "sagelang" / "core"
+    if local_sage.exists() and (local_sage / "sage").exists():
+        os.environ["PATH"] = str(local_sage) + os.pathsep + os.environ.get("PATH", "")
+        
+    res = run(["sage", "-c", "import sys\nprint sys.version"])
     if res and res.returncode == 0:
-        ver = res.stdout.strip() or res.stderr.strip()
-        ok(ver)
-        return True
-    res2 = run(["which", "sage"])
-    if res2 and res2.returncode == 0:
-        ok("found")
-        return True
-    fail("SageLang interpreter not found. Install from https://github.com/Night-Traders-Dev/SageLang")
+        ver = res.stdout.strip()
+        if ver.startswith("4.0.2") or ver >= "4.0.2":
+            ok(ver)
+            return True
+        else:
+            fail(f"Found v{ver} but SageLink requires SageLang >= 4.0.2")
+    else:
+        fail("SageLang interpreter not found or doesn't support 'sys.version'. Install from https://github.com/Night-Traders-Dev/SageLang")
     return False
 
 def cmd_build(args):
@@ -218,10 +224,40 @@ def cmd_info(args):
         print(f"    {CYAN}{f}{RESET}")
     print()
 
+def cmd_benchmark(args):
+    banner("SageLink Benchmarks")
+    check_sage()
+    os.makedirs("build", exist_ok=True)
+    benchmarks = ["Benchmarks/bench_fib.sage"]
+    for b in benchmarks:
+        name = Path(b).stem
+        section(f"Benchmark: {name}")
+        
+        step("Native ELF (AOT)")
+        aot_out = f"build/{name}_aot"
+        res = run(["sage", "--aot", b, "-o", aot_out, "-O3"])
+        if res and res.returncode == 0:
+            ok("compiled")
+            # measure time
+            print(f"      {DIM}Running Native ELF:{RESET}")
+            run(["time", f"./{aot_out}"], capture_output=False)
+        else:
+            fail("Native compilation failed")
+            
+        step("SageVM (.sgvm)")
+        sgvm_out = f"build/{name}.sgvm"
+        res = run(["sagevm", "compile", b, sgvm_out])
+        if res and res.returncode == 0:
+            ok("compiled")
+            print(f"      {DIM}Running SageVM:{RESET}")
+            run(["time", "sagevm", "run", sgvm_out], capture_output=False)
+        else:
+            fail("SageVM compilation failed")
+
 def main():
     parser = argparse.ArgumentParser(description="SageLink Build System")
     parser.add_argument("command", nargs="?", default="info",
-                        help="Command: build, test, check, clean, run, info, compile, cross-build, all")
+                        help="Command: build, test, check, clean, run, info, compile, cross-build, benchmark, all")
     parser.add_argument("args", nargs=argparse.REMAINDER,
                         help="Arguments passed through to sage CLI")
 
@@ -236,6 +272,7 @@ def main():
         "info":        cmd_info,
         "compile":     cmd_compile,
         "cross-build": cmd_compile,
+        "benchmark":   cmd_benchmark,
         "all":         lambda a: (cmd_check(a), cmd_test(a), cmd_compile(a), banner("All Complete")),
     }
 

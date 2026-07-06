@@ -1,4 +1,4 @@
-# SageLink v0.2.0
+# SageLink v0.2.1
 
 SageLink — an E2E encrypted protocol suite built on SageLang.
 
