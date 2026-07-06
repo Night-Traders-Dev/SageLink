@@ -89,7 +89,7 @@ def cmd_compile(args):
     banner("Compile Native Binaries")
     check_sage()
     os.makedirs("build", exist_ok=True)
-    targets = ["x86_64", "aarch64", "rv64"]
+    targets = ["x86-64", "aarch64", "rv64"]
     failed = 0
     for target in targets:
         section(f"Compiling for {target}")
@@ -214,21 +214,22 @@ def cmd_info(args):
 def main():
     parser = argparse.ArgumentParser(description="SageLink Build System")
     parser.add_argument("command", nargs="?", default="info",
-                        help="Command: build, test, check, clean, run, info, compile, all")
+                        help="Command: build, test, check, clean, run, info, compile, cross-build, all")
     parser.add_argument("args", nargs=argparse.REMAINDER,
                         help="Arguments passed through to sage CLI")
 
     args = parser.parse_args()
 
     commands = {
-        "build":   cmd_build,
-        "test":    cmd_test,
-        "check":   cmd_check,
-        "clean":   cmd_clean,
-        "run":     cmd_run,
-        "info":    cmd_info,
-        "compile": cmd_compile,
-        "all":     lambda a: (cmd_check(a), cmd_test(a), cmd_compile(a), banner("All Complete")),
+        "build":       cmd_build,
+        "test":        cmd_test,
+        "check":       cmd_check,
+        "clean":       cmd_clean,
+        "run":         cmd_run,
+        "info":        cmd_info,
+        "compile":     cmd_compile,
+        "cross-build": cmd_compile,
+        "all":         lambda a: (cmd_check(a), cmd_test(a), cmd_compile(a), banner("All Complete")),
     }
 
     fn = commands.get(args.command)
