@@ -86,16 +86,21 @@ def cmd_build(args):
     banner("Build Complete")
 
 def cmd_compile(args):
-    banner("Compile Native Binaries")
-    check_sage()
+    banner("Compile VM Binaries")
+    # Using sagevm for cross-building
     os.makedirs("build", exist_ok=True)
-    targets = ["x86-64", "aarch64", "rv64"]
+    targets = {
+        "x86_64":  [],
+        "aarch64": [],
+        "rv64":    ["--riscv"]
+    }
     failed = 0
-    for target in targets:
+    for target, flags in targets.items():
         section(f"Compiling for {target}")
         output = f"build/sagelink-{target}"
         step(f"Target: {target}")
-        res = run(["sage", "--compile-native", "src/cli/sagelink.sage", "-o", output, "--target", target, "-O3"])
+        cmd = ["sagevm", "compile", "src/cli/sagelink.sage", output, "--shebang"] + flags
+        res = run(cmd)
         if res and res.returncode == 0:
             ok("compiled")
         else:
@@ -103,6 +108,8 @@ def cmd_compile(args):
             warn("failed")
             if res and res.stderr:
                 print(f"      {DIM}{res.stderr.strip()}{RESET}")
+            if res and res.stdout:
+                print(f"      {DIM}{res.stdout.strip()}{RESET}")
     section("Compilation Summary")
     total = len(targets)
     passed = total - failed
