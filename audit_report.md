@@ -6,7 +6,7 @@ This comprehensive audit of SageLink identified several critical and high-priori
 
 The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and functionality gaps preventing operation on non-Linux platforms like macOS (due to hardcoded `libc.so` assumptions).
 
-This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
+Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversal Prevention and Blocking Wait on Unauthenticated Stream Queues) which have been verified as incorrect and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
 
 ### Top 10 Issues Ranked by Impact
 
@@ -15,11 +15,9 @@ This report provides detailed findings and actionable recommendations to harden 
 3. **[High]** Out-of-Memory (OOM) via whole-file buffering in FILE service.
 4. **[High]** Excessive I/O Overhead for large files via repeated `io.appendbytes`.
 5. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
-6. **[Medium]** Incomplete Path Traversal Prevention in FILE service.
-7. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
-8. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
-9. **[Low]** Blocking wait on unauthenticated stream queues could lead to unbounded memory growth.
-10. **[Informational]** Missing input validation on chunk sizes during file streaming.
+6. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
+7. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
+8. **[Informational]** Missing input validation on chunk sizes during file streaming.
 
 ---
 
@@ -44,11 +42,6 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Severity:** High
 - **Evidence:** In `src/cli/sagelink.sage:211-213`, `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
-
-### 3. Incomplete Path Traversal Prevention in FILE Service
-- **Severity:** Medium
-- **Evidence:** In `src/app/file.sage:136-144`, the sanitization logic strips out `/` and `\`, but fails to handle relative directory components like `.` or `..` properly if they are manipulated or reconstructed.
-- **Fix Recommendation:** Implement a strict allow-list for filenames or reject any filename containing `..` to prevent arbitrary file writes.
 
 ---
 
