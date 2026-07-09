@@ -17,7 +17,9 @@ Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversa
 5. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
 6. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
 7. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
-8. **[Informational]** Missing input validation on chunk sizes during file streaming.
+8. **[Informational]** Incomplete malicious file cleanup (leaves 0-byte file instead of unlinking).
+9. **[Informational]** Missing input validation on chunk sizes during file streaming.
+10. **[Informational]** Polling CPU overhead in stream read loops (`thread.sleep`).
 
 ---
 
@@ -48,12 +50,12 @@ Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversa
 ## Performance Report
 
 ### 1. Out-of-Memory (OOM) via Whole-File Buffering
-- **Bottleneck:** `io.readbytes` is used to load entire files into memory in `src/app/file.sage:11` (`let file_bytes = io.readbytes(local_path)`).
+- **Bottleneck:** `io.readbytes` is used to load entire files into memory in `src/app/file.sage` (`let file_bytes = io.readbytes(local_path)`).
 - **Estimated Impact:** Critical application crashes (OOM kills) on constrained embedded devices (like the targeted OrangePi RV2 or Raspberry Pi 4) when transferring large files (e.g., > 500MB).
 - **Recommended Fixes:** Transition to a streaming read approach, hashing and transferring the file in smaller chunks sequentially without loading the full file into a single list.
 
 ### 2. Excessive I/O Overhead in FILE Receiver
-- **Bottleneck:** In `src/app/file.sage:166`, `io.appendbytes(filename, chunk_data)` opens, appends, and closes the file descriptor for every 16KB chunk received.
+- **Bottleneck:** In `src/app/file.sage`, `io.appendbytes(filename, chunk_data)` opens, appends, and closes the file descriptor for every 16KB chunk received.
 - **Estimated Impact:** Severe throughput degradation due to thousands of repeated syscall overheads and filesystem metadata updates on large file transfers.
 - **Recommended Fixes:** Keep an open file handle and use `io.write` to stream chunks to disk directly, closing the handle only upon completion.
 
