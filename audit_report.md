@@ -6,14 +6,14 @@ This comprehensive audit of SageLink identified several critical and high-priori
 
 The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and functionality gaps preventing operation on non-Linux platforms like macOS (due to hardcoded `libc.so` assumptions).
 
-Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversal Prevention and Blocking Wait on Unauthenticated Stream Queues) which have been verified as incorrect and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
+Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame length allocation, replay window unauthenticated state mutation, rekey deadlocks) which have been verified as incorrect via tracing and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
 
 ### Top 10 Issues Ranked by Impact
 
 1. **[Critical]** Integrity Check Bypass in FILE receive logic.
 2. **[High]** Insecure Default Permissions (TOCTOU) for identity keys.
 3. **[High]** Out-of-Memory (OOM) via whole-file buffering in FILE service.
-4. **[High]** Excessive I/O Overhead for large files via repeated `io.appendbytes`.
+4. **[High]** Excessive I/O Overhead in FILE Receiver via repeated `io.appendbytes`.
 5. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
 6. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
 7. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
@@ -48,12 +48,12 @@ Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversa
 ## Performance Report
 
 ### 1. Out-of-Memory (OOM) via Whole-File Buffering
-- **Bottleneck:** `io.readbytes` is used to load entire files into memory in `src/app/file.sage:11` (`let file_bytes = io.readbytes(local_path)`).
+- **Bottleneck:** `io.readbytes` is used to load entire files into memory in `src/app/file.sage` (`let file_bytes = io.readbytes(local_path)`).
 - **Estimated Impact:** Critical application crashes (OOM kills) on constrained embedded devices (like the targeted OrangePi RV2 or Raspberry Pi 4) when transferring large files (e.g., > 500MB).
 - **Recommended Fixes:** Transition to a streaming read approach, hashing and transferring the file in smaller chunks sequentially without loading the full file into a single list.
 
 ### 2. Excessive I/O Overhead in FILE Receiver
-- **Bottleneck:** In `src/app/file.sage:166`, `io.appendbytes(filename, chunk_data)` opens, appends, and closes the file descriptor for every 16KB chunk received.
+- **Bottleneck:** In `src/app/file.sage`, `io.appendbytes(filename, chunk_data)` opens, appends, and closes the file descriptor for every 16KB chunk received.
 - **Estimated Impact:** Severe throughput degradation due to thousands of repeated syscall overheads and filesystem metadata updates on large file transfers.
 - **Recommended Fixes:** Keep an open file handle and use `io.write` to stream chunks to disk directly, closing the handle only upon completion.
 
