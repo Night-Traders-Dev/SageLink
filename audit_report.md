@@ -17,7 +17,9 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 5. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
 6. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
 7. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
-8. **[Informational]** Missing input validation on chunk sizes during file streaming.
+8. **[Informational]** Incomplete malicious file cleanup (leaves 0-byte file instead of unlinking).
+9. **[Informational]** Missing input validation on chunk sizes during file streaming.
+10. **[Informational]** Polling CPU overhead in stream read loops (`thread.sleep`).
 
 ---
 

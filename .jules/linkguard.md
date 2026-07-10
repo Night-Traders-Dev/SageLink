@@ -14,3 +14,5 @@
 - **Cross-Platform Limitations:** Hardcoded FFI dependency paths (e.g. `libc.so.6` or `libc.so`) cause total breakage on non-Linux systems, such as macOS, which rely on `.dylib` file extensions.
 - **Path Traversal Hallucination:** The FILE service's sanitization logic (`if c == '/' or c == '\\': filename = ''`) effectively strips all parent directory components by extracting the basename, making it safe from traversal attacks. Previous assumptions about `..` vulnerability were incorrect.
 - **Unauthenticated Queue Hallucination:** Streams are multiplexed only *after* the Noise_IK handshake establishes an authenticated session, meaning there are no unauthenticated stream queues.
+- **Incomplete Malicious File Cleanup:** Failing integrity checks overwrites files to 0-bytes instead of using an unlink/delete syscall, which may lead to clutter or unexpected behaviors if the empty file remains.
+- **Polling Loop CPU Overhead:** Code using `thread.sleep(0.005)` in tight while loops (like waiting for stream messages) wastes CPU cycles on embedded devices; a proper blocking condition variable or channel mechanism would be more efficient.
