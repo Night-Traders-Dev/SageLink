@@ -1,5 +1,31 @@
 # SageLink Audit Report
 
+## Architecture Map
+
+```
+┌─────────────────────────────────────────┐
+│  Application Layer                       │
+│  - CMD (Fire-and-forget remote cmd)      │
+│  - FILE (Chunked transfer + sliding win) │
+│  - SHELL (Interactive PTY, macOS broken) │
+├─────────────────────────────────────────┤
+│  Multiplexing Layer                      │
+│  - stream_id allocation (linear probe)   │
+│  - thread-safe queue per stream          │
+├─────────────────────────────────────────┤
+│  Transport Encryption                    │
+│  - ChaCha20-Poly1305 AEAD per-direction  │
+│  - Replay protection (64-entry bitmap)   │
+├─────────────────────────────────────────┤
+│  Handshake (Noise_IK)                    │
+│  - X25519 (Mutual Authentication)        │
+│  - BLAKE2s, HKDF                         │
+├─────────────────────────────────────────┤
+│  TCP                                     │
+│  - Length-prefixed frames                │
+└─────────────────────────────────────────┘
+```
+
 ## Executive Summary
 
 This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, and resource allocation. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application layer exhibits multiple flaws.
@@ -34,13 +60,15 @@ Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversa
 ## Security Report
 
 ### 1. Integrity Check Bypass in FILE Service
+- **Findings:** A logic flaw exists where writing beyond the exact `file_size` entirely skips the integrity check and cleanup.
 - **Severity:** Critical
 - **Evidence:** In `src/app/file.sage`, the receive loop `while bytes_written < file_size:` allows an attacker to send a chunk that pushes `bytes_written` to be strictly greater than `file_size`. This causes the loop to terminate, entirely skipping the subsequent `if bytes_written == file_size:` block that performs the SHA-256 hash validation and malicious file deletion.
 - **Fix Recommendation:** Modify the loop condition to account for potential overflow, check `bytes_written >= file_size`, and enforce a strict boundary check inside the loop. Ensure that any file failing the check or ending with `bytes_written > file_size` is immediately zeroed and deleted.
 
 ### 2. Insecure Default Permissions (TOCTOU) for Identity Keys
+- **Findings:** Keypairs are generated and stored with insecure default file permissions before being corrected.
 - **Severity:** High
-- **Evidence:** In `src/cli/sagelink.sage:211-213`, `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
+- **Evidence:** In `src/cli/sagelink.sage:211-213` (inside `run_keygen()`), `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
 
 ---
@@ -48,19 +76,24 @@ Previous audits contained hallucinated vulnerabilities (Incomplete Path Traversa
 ## Performance Report
 
 ### 1. Out-of-Memory (OOM) via Whole-File Buffering
-- **Bottleneck:** `io.readbytes` is used to load entire files into memory in `src/app/file.sage:11` (`let file_bytes = io.readbytes(local_path)`).
+- **Bottlenecks:** `io.readbytes` is used to load entire files into memory.
 - **Estimated Impact:** Critical application crashes (OOM kills) on constrained embedded devices (like the targeted OrangePi RV2 or Raspberry Pi 4) when transferring large files (e.g., > 500MB).
-- **Recommended Fixes:** Transition to a streaming read approach, hashing and transferring the file in smaller chunks sequentially without loading the full file into a single list.
+- **Recommended Fixes:** In `src/app/file.sage:11` (`let file_bytes = io.readbytes(local_path)`), transition to a streaming read approach, hashing and transferring the file in smaller chunks sequentially without loading the full file into a single list.
 
 ### 2. Excessive I/O Overhead in FILE Receiver
-- **Bottleneck:** In `src/app/file.sage:166`, `io.appendbytes(filename, chunk_data)` opens, appends, and closes the file descriptor for every 16KB chunk received.
+- **Bottlenecks:** Repeated file open/close on every chunk receive.
 - **Estimated Impact:** Severe throughput degradation due to thousands of repeated syscall overheads and filesystem metadata updates on large file transfers.
-- **Recommended Fixes:** Keep an open file handle and use `io.write` to stream chunks to disk directly, closing the handle only upon completion.
+- **Recommended Fixes:** In `src/app/file.sage:166`, `io.appendbytes(filename, chunk_data)` opens, appends, and closes the file descriptor for every 16KB chunk received. Keep an open file handle and use `io.write` to stream chunks to disk directly, closing the handle only upon completion.
 
 ### 3. CPU Overhead via Element-by-Element List Copying
-- **Bottleneck:** Extensive use of `push()` in loops in `src/transport/framing.sage` and `src/mux/stream.sage` instead of native slice or memory block operations.
+- **Bottlenecks:** Array pushes are used instead of buffer block manipulations.
 - **Estimated Impact:** O(N) CPU overhead during encryption, decryption, and message framing, severely reducing network throughput.
-- **Recommended Fixes:** Leverage native memory buffer operations or bulk slice copies if supported by SageLang.
+- **Recommended Fixes:** Extensive use of `push()` in loops in `src/transport/framing.sage` and `src/mux/stream.sage` instead of native slice or memory block operations should be refactored. Leverage native memory buffer operations or bulk slice copies if supported by SageLang.
+
+### 4. Potential Stream ID Exhaustion via O(N) Linear Probe
+- **Bottlenecks:** Linear probing mechanism for free Stream ID discovery.
+- **Estimated Impact:** Performance degradation when many streams are active, theoretically hitting 65536 iterations.
+- **Recommended Fixes:** In `src/mux/stream.sage` inside `mux_open_stream`, stream IDs are allocated via an O(N) linear probe. Transition to an ID pool or randomized probing to improve allocation time complexity under heavy multiplexing.
 
 ---
 
