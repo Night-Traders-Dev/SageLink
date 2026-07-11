@@ -1,5 +1,34 @@
 # SageLink Audit Report
 
+## Architecture Map
+
+```text
+┌─────────────────────────────────────────┐
+│  Application Layer                       │  CMD / FILE / SHELL
+├─────────────────────────────────────────┤
+│  Multiplexing Layer                      │  stream_id, flow control
+├─────────────────────────────────────────┤
+│  Transport Encryption                    │  ChaCha20-Poly1305
+├─────────────────────────────────────────┤
+│  Handshake (Noise_IK)                    │  X25519, BLAKE2s, HKDF
+├─────────────────────────────────────────┤
+│  TCP                                     │  length-prefixed frames
+└─────────────────────────────────────────┘
+```
+- **Major Subsystems**:
+  - `src/handshake/` (Noise_IK handshake state machine)
+  - `src/transport/` (Wire framing & replay protection)
+  - `src/mux/` (Stream multiplexing)
+  - `src/app/` (Application services: CMD, FILE, SHELL)
+  - `src/cli/` (CLI entry point)
+- **External Dependencies**:
+  - Requires `SageLang >= 4.0.2`
+  - Zero FFI for cryptography; uses FFI in app/shell.sage (`libc`) and app/file.sage.
+- **Build System**:
+  - `sagemake` Python script wrapping SageLang compiler/interpreter.
+- **Testing Infrastructure**:
+  - Shell-based `sagemake test` integrating `.sage` test files (unit/integration tests) inside `Testing/`.
+
 ## Executive Summary
 
 This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, and resource allocation. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application layer exhibits multiple flaws.
@@ -42,7 +71,7 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 
 ### 2. Insecure Default Permissions (TOCTOU) for Identity Keys
 - **Severity:** High
-- **Evidence:** In `src/cli/sagelink.sage:211-213`, `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
+- **Evidence:** In `src/cli/sagelink.sage:211-213` (or similar line for keygen), `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
 
 ---
