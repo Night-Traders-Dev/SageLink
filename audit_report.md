@@ -1,12 +1,39 @@
 # SageLink Audit Report
 
+## Architecture Map
+
+SageLink is organized as a strict layering of independent modules, each responsible for one concern. No module below the multiplexing layer knows about CMD, FILE, or SHELL; no module above the transport layer touches raw sockets or encryption keys.
+
+```
+┌─────────────────────────────────────────┐
+│  Application Layer         (app/)       │  CMD / FILE / SHELL
+├─────────────────────────────────────────┤
+│  Multiplexing Layer        (mux/)       │  stream_id routing, flow control
+├─────────────────────────────────────────┤
+│  Transport Encryption      (transport/) │  ChaCha20-Poly1305, replay window
+├─────────────────────────────────────────┤
+│  Handshake                 (handshake/) │  Noise_IK (X25519, BLAKE2s, HKDF)
+├─────────────────────────────────────────┤
+│  TCP Socket                             │  length-prefixed binary frames
+└─────────────────────────────────────────┘
+```
+
+**Major Subsystems & Dependencies:**
+- **`utils`**: Shared byte/list conversion helpers.
+- **`handshake/noise_ik`**: Implements Noise_IK handshake state machine; depends on `crypto.*` modules.
+- **`transport/replay_window`**: Sliding bitmap replay protection.
+- **`transport/framing`**: Wire framing and encryption/decryption; depends on `replay_window`, `utils`, `crypto.aead`.
+- **`mux/stream`**: Stream multiplexing and rekeying; depends on `framing`, `noise_ik`, `utils`.
+- **`app/cmd`, `app/file`, `app/shell`**: Application services.
+- **`cli/sagelink`**: CLI entry point orchestrating all layers.
+
 ## Executive Summary
 
 This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, and resource allocation. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application layer exhibits multiple flaws.
 
 The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and functionality gaps preventing operation on non-Linux platforms like macOS (due to hardcoded `libc.so` assumptions).
 
-Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame length allocation, replay window unauthenticated state mutation, rekey deadlocks) which have been verified as incorrect via tracing and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
+Previous audits contained hallucinated vulnerabilities (e.g., unbounded frame length allocation, replay window unauthenticated state mutation, rekey deadlocks) which have been verified as incorrect via tracing and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
 
 ### Top 10 Issues Ranked by Impact
 
@@ -64,18 +91,24 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 - **Estimated Impact:** O(N) CPU overhead during encryption, decryption, and message framing, severely reducing network throughput.
 - **Recommended Fixes:** Leverage native memory buffer operations or bulk slice copies if supported by SageLang.
 
+### 4. Polling Loop CPU Overhead
+- **Bottleneck:** Code using `thread.sleep(0.005)` in tight while loops (like waiting for stream messages in `src/mux/stream.sage` and `src/app/file.sage`).
+- **Estimated Impact:** Wastes CPU cycles on embedded devices, reducing battery life and taking CPU time from other tasks.
+- **Recommended Fixes:** A proper blocking condition variable or channel mechanism should be utilized instead of busy-wait polling.
+
 ---
 
 ## Functionality Report
 
 ### Working Features
-- Mutual Authentication via Noise_IK with X25519 and ChaCha20-Poly1305.
-- CMD execution with accurate remote shell spawning and output capture.
-- Replay Protection via a 64-entry sliding bitmap in the transport layer.
-- Multiplexed Streams supporting overlapping operations on a single TCP socket.
+- **Mutual Authentication:** Authenticates properly via Noise_IK with X25519 and ChaCha20-Poly1305.
+- **CMD Execution:** Accurate remote shell spawning and output capture.
+- **Replay Protection:** Replay window logic (64-entry sliding bitmap) functions correctly.
+- **Multiplexed Streams:** Supports overlapping operations on a single TCP socket securely.
+- **File Transfer Flow Control:** Basic sliding-window flow control ensures reliable transfer within bounded concurrency.
 
 ### Broken Features
-- **Cross-Platform Shell Service (macOS):** The SHELL service in `src/app/shell.sage` assumes the presence of `libc.so.6` or `libc.so`, completely breaking functionality on macOS which uses `libc.dylib` or `libSystem.dylib`.
+- **Cross-Platform Shell Service (macOS):** The SHELL service in `src/app/shell.sage` assumes the presence of `libc.so.6` or `libc.so`, failing entirely on non-Linux platforms (e.g., macOS which uses `.dylib` extensions).
 
 ### Missing Coverage
 - Missing tests validating that maliciously oversized file chunks correctly trigger validation failures.

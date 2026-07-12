@@ -16,3 +16,4 @@
 - **Unauthenticated Queue Hallucination:** Streams are multiplexed only *after* the Noise_IK handshake establishes an authenticated session, meaning there are no unauthenticated stream queues.
 - **Incomplete Malicious File Cleanup:** Failing integrity checks overwrites files to 0-bytes instead of using an unlink/delete syscall, which may lead to clutter or unexpected behaviors if the empty file remains.
 - **Polling Loop CPU Overhead:** Code using `thread.sleep(0.005)` in tight while loops (like waiting for stream messages) wastes CPU cycles on embedded devices; a proper blocking condition variable or channel mechanism would be more efficient.
+- **Missing Architecture Map:** Previous audits occasionally missed the required `Architecture Map` from the `audit_report.md` deliverable schema. Ensure future audits accurately document the runtime architecture mapping.
