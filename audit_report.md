@@ -1,10 +1,39 @@
 # SageLink Audit Report
 
+## Architecture Map
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Application Layer                                     │
+│  - CMD (src/app/cmd.sage):   Remote command execution  │
+│  - FILE (src/app/file.sage): Chunked file transfer     │
+│  - SHELL (src/app/shell.sage): Interactive PTY shell   │
+├────────────────────────────────────────────────────────┤
+│  Multiplexing Layer                                    │
+│  - STREAM (src/mux/stream.sage): Stream multiplexing   │
+│    (stream_id, sliding flow control)                   │
+├────────────────────────────────────────────────────────┤
+│  Transport Layer                                       │
+│  - ENCRYPTION (src/transport/framing.sage):            │
+│    ChaCha20-Poly1305, encrypt_frame/decrypt_frame      │
+│  - REPLAY WINDOW (src/transport/replay_window.sage):   │
+│    Sliding 64-entry bitmap for replay protection       │
+├────────────────────────────────────────────────────────┤
+│  Handshake Layer                                       │
+│  - NOISE_IK (src/handshake/noise_ik.sage):             │
+│    X25519 (Diffie-Hellman), BLAKE2s, HKDF              │
+├────────────────────────────────────────────────────────┤
+│  Network Layer                                         │
+│  - TCP (tcp.sage builtin):                             │
+│    Length-prefixed frames, reliable transport          │
+└────────────────────────────────────────────────────────┘
+```
+
 ## Executive Summary
 
-This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, and resource allocation. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application layer exhibits multiple flaws.
+This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, process hygiene, and resource allocation. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application layer exhibits multiple flaws.
 
-The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and functionality gaps preventing operation on non-Linux platforms like macOS (due to hardcoded `libc.so` assumptions).
+The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and functionality gaps preventing operation on non-Linux platforms like macOS (due to hardcoded `libc.so` assumptions). We also found process hygiene issues leading to potential Zombie Process Leaks in the interactive shell service.
 
 Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame length allocation, replay window unauthenticated state mutation, rekey deadlocks) which have been verified as incorrect via tracing and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
 
@@ -13,12 +42,12 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 1. **[Critical]** Integrity Check Bypass in FILE receive logic.
 2. **[High]** Insecure Default Permissions (TOCTOU) for identity keys.
 3. **[High]** Out-of-Memory (OOM) via whole-file buffering in FILE service.
-4. **[High]** Excessive I/O Overhead in FILE Receiver via repeated `io.appendbytes`.
-5. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
-6. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
-7. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
-8. **[Informational]** Incomplete malicious file cleanup (leaves 0-byte file instead of unlinking).
-9. **[Informational]** Missing input validation on chunk sizes during file streaming.
+4. **[High]** Zombie Process Leaks in SHELL service (waitpid not called).
+5. **[Medium]** Excessive I/O Overhead in FILE Receiver via repeated `io.appendbytes`.
+6. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
+7. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
+8. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
+9. **[Informational]** Incomplete malicious file cleanup (leaves 0-byte file instead of unlinking).
 10. **[Informational]** Polling CPU overhead in stream read loops (`thread.sleep`).
 
 ---
@@ -44,6 +73,11 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 - **Severity:** High
 - **Evidence:** In `src/cli/sagelink.sage:211-213`, `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
+
+### 3. Zombie Process Leaks in SHELL Service
+- **Severity:** High
+- **Evidence:** In `src/app/shell.sage`, the parent process forks a child interactive shell using `system("/bin/sh")` but lacks any corresponding `waitpid` call after cleaning up the session with `kill(pid, 9)`. This will leave zombie processes behind in the operating system every time a shell stream closes.
+- **Fix Recommendation:** Incorporate an explicit `waitpid` FFI call in the parent process during cleanup, after the `kill(pid, 9)` syscall in `handle_shell_stream`.
 
 ---
 
