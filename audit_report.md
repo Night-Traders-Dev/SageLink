@@ -31,32 +31,32 @@
 
 ## Executive Summary
 
-This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, and resource allocation. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application layer exhibits multiple flaws.
+This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, resource allocation, and shell execution. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application and connection handling layers exhibit multiple flaws.
 
-The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and functionality gaps preventing operation on non-Linux platforms like macOS (due to hardcoded `libc.so` assumptions).
+The most severe issue is an Integrity Check Bypass in the file transfer service, allowing a malicious actor to silently replace files without triggering SHA-256 validation. Additionally, there are race conditions in key generation leading to insecure file permissions, Out-Of-Memory (OOM) risks on constrained devices due to whole-file buffering, and an unauthenticated thread exhaustion vulnerability where incoming TCP connections rapidly spawn threads without limits, leading to potential Denial of Service.
 
 Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame length allocation, replay window unauthenticated state mutation, rekey deadlocks) which have been verified as incorrect via tracing and removed from this report. This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
 
 ### Top 10 Issues Ranked by Impact
 
 1. **[Critical]** Integrity Check Bypass in FILE receive logic.
-2. **[High]** Insecure Default Permissions (TOCTOU) for identity keys.
-3. **[High]** Out-of-Memory (OOM) via whole-file buffering in FILE service.
-4. **[High]** Excessive I/O Overhead in FILE Receiver via repeated `io.appendbytes`.
-5. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure).
-6. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
-7. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
-8. **[Informational]** Incomplete malicious file cleanup (leaves 0-byte file instead of unlinking).
-9. **[Informational]** Missing input validation on chunk sizes during file streaming.
+2. **[Critical]** Unbounded Thread Spawn (Unauthenticated Thread Exhaustion) in CLI listener.
+3. **[High]** Insecure Default Permissions (TOCTOU) for identity keys.
+4. **[High]** Out-of-Memory (OOM) via whole-file buffering in FILE service.
+5. **[High]** Excessive I/O Overhead in FILE Receiver via repeated `io.appendbytes`.
+6. **[Medium]** Cross-Platform Functionality Gap in SHELL service (macOS failure) and Hardcoded IOCTL values.
+7. **[Medium]** CPU Overhead (O(N) latency) via element-by-element list copying in transport layer.
+8. **[Low]** Potential Stream ID Exhaustion via O(N) linear probe.
+9. **[Informational]** Incomplete malicious file cleanup (leaves 0-byte file instead of unlinking).
 10. **[Informational]** Polling CPU overhead in stream read loops (`thread.sleep`).
 
 ---
 
 ## Repository Health Score
 
-- Security: 4/10
-- Performance: 5/10
-- Reliability: 6/10
+- Security: 3/10
+- Performance: 4/10
+- Reliability: 5/10
 - Maintainability: 7/10
 - Documentation: 9/10
 
@@ -69,7 +69,12 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 - **Evidence:** In `src/app/file.sage`, the receive loop `while bytes_written < file_size:` allows an attacker to send a chunk that pushes `bytes_written` to be strictly greater than `file_size`. This causes the loop to terminate, entirely skipping the subsequent `if bytes_written == file_size:` block that performs the SHA-256 hash validation and malicious file deletion.
 - **Fix Recommendation:** Modify the loop condition to account for potential overflow, check `bytes_written >= file_size`, and enforce a strict boundary check inside the loop. Ensure that any file failing the check or ending with `bytes_written > file_size` is immediately zeroed and deleted.
 
-### 2. Insecure Default Permissions (TOCTOU) for Identity Keys
+### 2. Unbounded Thread Spawn (Unauthenticated Thread Exhaustion) in CLI Listener
+- **Severity:** Critical
+- **Evidence:** In `src/cli/sagelink.sage:369`, `tcp.accept()` triggers `thread.spawn(handle_client)` without any rate limiting, queueing, or maximum connection limit. An unauthenticated attacker can rapidly open TCP connections, causing the SageLang runtime to exhaust system threads or memory (Slowloris/DoS), even before the Noise_IK handshake begins.
+- **Fix Recommendation:** Implement a bounded thread pool or strict connection limits (e.g., maximum 10 concurrent unauthenticated handshake attempts) before spawning handler threads.
+
+### 3. Insecure Default Permissions (TOCTOU) for Identity Keys
 - **Severity:** High
 - **Evidence:** In `src/cli/sagelink.sage:211-213` (or similar line for keygen), `io.writefile("identity.key", priv_b64 + "\n")` writes the private key with default system permissions (often 0644), followed by a `sys.shell_exec("chmod 600 identity.key")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the chmod command executes.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
@@ -104,7 +109,8 @@ Previous audits contained hallucinated vulnerabilities (e.g. unbounded frame len
 - Multiplexed Streams supporting overlapping operations on a single TCP socket.
 
 ### Broken Features
-- **Cross-Platform Shell Service (macOS):** The SHELL service in `src/app/shell.sage` assumes the presence of `libc.so.6` or `libc.so`, completely breaking functionality on macOS which uses `libc.dylib` or `libSystem.dylib`.
+- **Cross-Platform Shell Service (macOS):** The SHELL service in `src/app/shell.sage` assumes the presence of `libc.so.6` or `libc.so`, breaking functionality on macOS which uses `libc.dylib` or `libSystem.dylib`.
+- **Hardcoded IOCTL Values:** The SHELL service uses hardcoded integer values for platform-specific IOCTLs (e.g. `TIOCSCTTY = 21518`, `TIOCSWINSZ = 21524` in `src/app/shell.sage`), preventing correct terminal handling across different operating systems or architectures.
 
 ### Missing Coverage
 - Missing tests validating that maliciously oversized file chunks correctly trigger validation failures.
