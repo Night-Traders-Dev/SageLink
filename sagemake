@@ -123,6 +123,25 @@ def cmd_compile(args):
     if failed:
         sys.exit(1)
 
+def cmd_jit(args):
+    banner("JIT Build (Standalone Binary)")
+    check_sage()
+    os.makedirs("build", exist_ok=True)
+    step("Building with --jit")
+    output = f"build/sagelink-jit"
+    res = run(["sage", "--jit", "src/cli/sagelink.sage", "-o", output])
+    if res and res.returncode == 0:
+        ok(f"compiled to {output}")
+        # Test the binary
+        step("Testing JIT binary")
+        test_res = run([f"./{output}", "--help"], capture_output=False)
+    else:
+        fail("JIT compilation failed")
+        if res and res.stderr:
+            print(f"      {DIM}{res.stderr.strip()}{RESET}")
+        if res and res.stdout:
+            print(f"      {DIM}{res.stdout.strip()}{RESET}")
+
 def cmd_check(args):
     banner("Syntax Check")
     check_sage()
@@ -196,10 +215,10 @@ def cmd_run(args):
     check_sage()
     if not args.args:
         args.args = []
-    cmd = ["sage", "src/cli/sagelink.sage"] + args.args
+    # Use JIT runtime by default
+    cmd = ["sage", "--runtime", "jit", "src/cli/sagelink.sage"] + args.args
     print(f"  {DIM}{' '.join(cmd)}{RESET}\n")
     os.execvp("sage", cmd)
-
 def cmd_info(args):
     banner(f"SageLink v{VERSION}")
     print(f"  {BOLD}Repository:{RESET}   https://github.com/Night-Traders-Dev/SageLink")
@@ -251,6 +270,17 @@ def cmd_benchmark(args):
         else:
             fail("SageVM compilation failed")
 
+def cmd_jit(args):
+    banner("JIT Build")
+    check_sage()
+    os.makedirs("build", exist_ok=True)
+    step("Compiling with --jit")
+    res = run(["sage", "--jit", "src/cli/sagelink.sage", "-o", "build/sagelink"])
+    if res and res.returncode == 0:
+        ok("build/sagelink created")
+    else:
+        fail("JIT compilation failed")
+
 def main():
     parser = argparse.ArgumentParser(description="SageLink Build System")
     parser.add_argument("command", nargs="?", default="info",
@@ -270,6 +300,7 @@ def main():
         "compile":     cmd_compile,
         "cross-build": cmd_compile,
         "benchmark":   cmd_benchmark,
+        "jit":         cmd_jit,
         "all":         lambda a: (cmd_check(a), cmd_test(a), cmd_compile(a), banner("All Complete")),
     }
 

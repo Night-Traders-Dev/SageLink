@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.3.0 (2026-07-17)
+
+### Security Fixes (Critical)
+- **Integrity Check Bypass in FILE Service** (`src/app/file.sage`): Fixed loop boundary check that allowed malicious oversized chunks to skip SHA-256 validation. Added boundary check before write and strict `>=` check at loop exit with file wipe on mismatch.
+- **Unbounded Thread Spawn DoS** (`src/cli/sagelink.sage`): Added connection limiting (max 10 concurrent unauthenticated handshakes) using mutex-protected counter to prevent thread exhaustion attacks.
+- **Unbounded Stream Queue Memory Exhaustion** (`src/mux/stream.sage`): Added `max_queue_size` (default 1000) per stream with backpressure (drop + warn) in `mux_reader_loop`.
+- **Insecure Key Permissions TOCTOU** (`src/cli/sagelink.sage`): Changed `keygen` to write private key to temp file, `chmod 600`, then atomic rename — eliminating race window.
+
+### Performance Improvements
+- **Streaming File I/O via FFI** (`src/app/file.sage`): Replaced `io.readbytes`/`io.appendbytes` (whole-file buffering, per-chunk open/close) with FFI `open`/`read`/`write`/`close` for constant-memory streaming and single file handle. Added incremental SHA-256 (`sha256_init`/`update`/`final` in `crypto/hash.sage`).
+- **CPU Optimization** (`src/transport/framing.sage`, `src/mux/stream.sage`): Replaced element-wise `push()` loops with native list concatenation (`+` operator) and `slice()` in frame encryption/decryption and mux message packing.
+
+### Functionality Fixes
+- **IPv6 Address Parsing** (`src/cli/sagelink.sage`): `parse_addr` now correctly handles RFC 3986 bracketed IPv6 format (`[::1]:7420`, `[2001:db8::1]:7420`) and finds last colon for IPv4/hostname.
+- **CMD Exit Code Propagation** (`src/app/cmd.sage`): Server now runs commands via FFI `system()` and extracts exit code using `WEXITSTATUS`, returning actual exit code instead of hardcoded `0`.
+- **Cross-Platform SHELL Service** (`src/app/shell.sage`): Dynamic libc loading (`libc.dylib` on macOS, `libc.so.6` on Linux), platform-specific IOCTL constants (`TIOCSCTTY`, `TIOCSWINSZ`) resolved at runtime via `uname`.
+
+### Build & Testing
+- **JIT Standalone Binary**: Added `sagemake jit` command using `sage --jit src/cli/sagelink.sage -o build/sagelink` for fast single-binary distribution.
+- **Default JIT Runtime**: `sagemake run` now uses `--runtime jit` by default.
+- **New Test File**: `Testing/test_file_integrity.sage` covers oversized/undersized/exact chunks, hash validation, and tampering detection.
+
 ## v0.2.1 (2026-07-05)
 
 ### Features

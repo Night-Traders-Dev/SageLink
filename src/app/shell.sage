@@ -5,15 +5,54 @@ import thread
 import sagelink.mux.stream as stream
 import sagelink.utils as utils
 
+# Platform detection and constants
+proc get_libc():
+    let uname = sys.shell_exec("uname -s")
+    if string.contains(uname, "Darwin"):
+        # macOS
+        return ffi_open("libc.dylib")
+    else:
+        # Linux and others
+        let libc = ffi_open("libc.so.6")
+        if libc == nil:
+            libc = ffi_open("libc.so")
+        end
+        if libc == nil:
+            libc = ffi_open("")
+        end
+        return libc
+    end
+end
+
+proc get_ioctl_ctty():
+    let uname = sys.shell_exec("uname -s")
+    if string.contains(uname, "Darwin"):
+        # macOS: TIOCSCTTY = 0x2000740E
+        return 536871950
+    else:
+        # Linux: TIOCSCTTY = 0x540E
+        return 21518
+    end
+end
+
+proc get_ioctl_winsz():
+    let uname = sys.shell_exec("uname -s")
+    if string.contains(uname, "Darwin"):
+        # macOS: TIOCSWINSZ = 0x40087467
+        return 1074525287
+    else:
+        # Linux: TIOCSWINSZ = 0x5414
+        return 21524
+    end
+end
+
 # Dedicated loop to read from PTY master and write to the multiplexed stream
 proc pty_to_stream_loop(master_fd, mux, s):
     let read_buf = mem_alloc(4096)
-    let libc = ffi_open("libc.so.6")
+    let libc = get_libc()
     if libc == nil:
-        libc = ffi_open("libc.so")
-    end
-    if libc == nil:
-        libc = ffi_open("")
+        stream.stream_close(mux, s)
+        return
     end
     
     while not s["closed"] and mux["running"]:
@@ -43,13 +82,7 @@ end
 
 # Server-side handler for a SHELL stream
 proc handle_shell_stream(mux, s):
-    let libc = ffi_open("libc.so.6")
-    if libc == nil:
-        libc = ffi_open("libc.so")
-    end
-    if libc == nil:
-        libc = ffi_open("")
-    end
+    let libc = get_libc()
     if libc == nil:
         print "Error: libc FFI not available on server"
         stream.stream_close(mux, s)
@@ -105,8 +138,9 @@ proc handle_shell_stream(mux, s):
         # Create session
         ffi_call(libc, "setsid", "int", [])
         
-        # Set controlling terminal: TIOCSCTTY = 21518 (0x540E)
-        ffi_call(libc, "ioctl", "int", [slave_fd, 21518, 0])
+        # Set controlling terminal: TIOCSCTTY (platform-specific)
+        let ioctl_ctty = get_ioctl_ctty()
+        ffi_call(libc, "ioctl", "int", [slave_fd, ioctl_ctty, 0])
         
         # Redirect standard streams to slave PTY
         ffi_call(libc, "dup2", "int", [slave_fd, 0])
@@ -130,6 +164,9 @@ proc handle_shell_stream(mux, s):
     end
     thread.spawn(run_reader)
     
+    # Get platform-specific IOCTL constants
+    let ioctl_winsz = get_ioctl_winsz()
+
     # Process incoming messages from client (Stream -> PTY)
     while not s["closed"] and mux["running"]:
         let msg = stream.stream_read_msg(s)
@@ -168,8 +205,8 @@ proc handle_shell_stream(mux, s):
                 mem_write(ws, 6, "byte", 0)
                 mem_write(ws, 7, "byte", 0)
                 
-                # TIOCSWINSZ = 21524 (0x5414)
-                ffi_call(libc, "ioctl", "int", [master_fd, 21524, ws])
+                # TIOCSWINSZ (platform-specific)
+                ffi_call(libc, "ioctl", "int", [master_fd, ioctl_winsz, ws])
                 mem_free(ws)
             end
         end
@@ -191,13 +228,7 @@ proc run_client_shell(mux):
         return false
     end
     
-    let libc = ffi_open("libc.so.6")
-    if libc == nil:
-        libc = ffi_open("libc.so")
-    end
-    if libc == nil:
-        libc = ffi_open("")
-    end
+    let libc = get_libc()
     if libc == nil:
         print "Error: libc FFI not available on client"
         stream.stream_close(mux, s)

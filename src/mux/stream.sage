@@ -182,10 +182,7 @@ end
 # Pack and send a message on a stream
 proc mux_send_msg(mux, stream_id, msg_type, payload):
     # Pack msg_type (1B) + stream_id (2B) + payload
-    let msg = [msg_type, (stream_id >> 8) & 255, stream_id & 255]
-    for i in range(len(payload)):
-        push(msg, payload[i])
-    end
+    let msg = [msg_type, (stream_id >> 8) & 255, stream_id & 255] + payload
     return mux_send_frame(mux, utils.bytes(msg))
 
 proc create_stream(stream_id, service_type):
@@ -196,6 +193,7 @@ proc create_stream(stream_id, service_type):
     s["queue_head"] = 0
     s["mutex"] = thread.mutex()
     s["closed"] = false
+    s["max_queue_size"] = 1000  # Limit queue size to prevent memory exhaustion
     return s
 
 # Read loop run by reader thread
@@ -233,11 +231,7 @@ proc mux_reader_loop(mux):
         let stream_id = plaintext[1] * 256 + plaintext[2]
         
         # Extract payload
-        let payload = []
-        for i in range(3, len(plaintext)):
-            push(payload, plaintext[i])
-        end
-        let payload_bytes = utils.bytes(payload)
+        let payload_bytes = utils.bytes(slice(plaintext, 3, len(plaintext)))
         
         if stream_id == 0:
             if msg_type == REKEY_MSG1:
@@ -289,7 +283,13 @@ proc mux_reader_loop(mux):
                 thread.unlock(stream["mutex"])
             else:
                 thread.lock(stream["mutex"])
-                push(stream["queue"], {"msg_type": msg_type, "payload": payload_bytes})
+                let qlen = len(stream["queue"]) - stream["queue_head"]
+                if qlen < stream["max_queue_size"]:
+                    push(stream["queue"], {"msg_type": msg_type, "payload": payload_bytes})
+                else:
+                    # Queue full: drop message and log warning (backpressure)
+                    print "Warning: Stream queue full, dropping message (stream " + str(stream_id) + ")"
+                end
                 thread.unlock(stream["mutex"])
             end
         else:

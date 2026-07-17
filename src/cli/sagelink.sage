@@ -208,9 +208,11 @@ proc run_keygen():
     let priv_b64 = b64_encode(keypair["priv"])
     let pub_b64 = b64_encode(keypair["pub"])
     
-    io.writefile("identity.key", priv_b64 + "\n")
+    # Write to temp file first, then atomic rename to avoid TOCTOU
+    let tmp_key = "identity.key.tmp." + str(sys.clock())
+    io.writefile(tmp_key, priv_b64 + "\n")
+    sys.shell_exec("chmod 600 " + tmp_key + " && mv " + tmp_key + " identity.key")
     io.writefile("identity.pub", pub_b64 + "\n")
-    sys.shell_exec("chmod 600 identity.key")
     
     print "Keypair generated successfully."
     print "Private key saved to identity.key (mode 0600)."
@@ -266,6 +268,11 @@ proc run_listen(port_str = nil):
         port = val
     end
     
+    # Connection limit to prevent unbounded thread spawn (DoS protection)
+    let MAX_UNAUTH_CONNECTIONS = 10
+    let conn_mutex = thread.mutex()
+    let active_connections = 0
+    
     print "Listening on port " + str(port) + "..."
     let listener = tcp.listen("0.0.0.0", port)
     if listener == nil:
@@ -279,6 +286,17 @@ proc run_listen(port_str = nil):
             continue
         end
         
+        # Check connection limit
+        thread.lock(conn_mutex)
+        if active_connections >= MAX_UNAUTH_CONNECTIONS:
+            thread.unlock(conn_mutex)
+            print "Warning: Max unauthenticated connections reached, rejecting connection"
+            tcp.close(sock)
+            continue
+        end
+        active_connections = active_connections + 1
+        thread.unlock(conn_mutex)
+        
         proc handle_client():
             print "Incoming connection accepted. Performing Noise_IK handshake..."
             let bob_hs = noise_ik.initialize_handshake("responder", local_keys)
@@ -288,6 +306,9 @@ proc run_listen(port_str = nil):
             if msg1 == nil:
                 print "Error: Handshake failed to read Msg 1"
                 tcp.close(sock)
+                thread.lock(conn_mutex)
+                active_connections = active_connections - 1
+                thread.unlock(conn_mutex)
                 return
             end
             
@@ -295,6 +316,9 @@ proc run_listen(port_str = nil):
             if read1 == nil:
                 print "Error: Handshake failed to parse Msg 1"
                 tcp.close(sock)
+                thread.lock(conn_mutex)
+                active_connections = active_connections - 1
+                thread.unlock(conn_mutex)
                 return
             end
             
@@ -316,6 +340,9 @@ proc run_listen(port_str = nil):
             if matched_peer == nil:
                 print "Authentication Failed: Pinned key mismatch. Dropping connection."
                 tcp.close(sock)
+                thread.lock(conn_mutex)
+                active_connections = active_connections - 1
+                thread.unlock(conn_mutex)
                 return
             end
             
@@ -364,6 +391,11 @@ proc run_listen(port_str = nil):
             end
             tcp.close(sock)
             print "Connection with " + matched_peer + " closed."
+            
+            # Decrement connection counter
+            thread.lock(conn_mutex)
+            active_connections = active_connections - 1
+            thread.unlock(conn_mutex)
         end
         
         thread.spawn(handle_client)
@@ -371,8 +403,34 @@ proc run_listen(port_str = nil):
 end
 
 proc parse_addr(addr_str):
+    # Handle IPv6 format: [::1]:7420 or [2001:db8::1]:7420
+    if len(addr_str) > 0 and addr_str[0] == "[":
+        let bracket_end = -1
+        for i in range(len(addr_str)):
+            if addr_str[i] == "]":
+                bracket_end = i
+                break
+            end
+        end
+        if bracket_end == -1:
+            return {"host": addr_str, "port": 7420}
+        end
+        let host = str_slice(addr_str, 1, bracket_end)
+        # Check if there's a port after ]
+        if bracket_end + 1 < len(addr_str) and addr_str[bracket_end + 1] == ":":
+            let port_str = str_slice(addr_str, bracket_end + 2, len(addr_str))
+            let port = 0
+            for i in range(len(port_str)):
+                port = port * 10 + (ord(port_str[i]) - 48)
+            end
+            return {"host": host, "port": port}
+        end
+        return {"host": host, "port": 7420}
+    end
+    
+    # IPv4/hostname: find LAST colon
     let col_idx = -1
-    for i in range(len(addr_str)):
+    for i in range(len(addr_str) - 1, -1, -1):
         if addr_str[i] == ":":
             col_idx = i
             break

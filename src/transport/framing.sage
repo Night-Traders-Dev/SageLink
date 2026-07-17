@@ -42,11 +42,8 @@ proc bytes_to_uint64(b):
 # Encrypts a plaintext (list of bytes or bytes object) into an outer frame (bytes object)
 proc encrypt_frame(key, counter, plaintext):
     # Nonce format: 0x00000000 || counter (8 bytes, big-endian)
-    let nonce = [0, 0, 0, 0]
     let counter_bytes = uint64_to_bytes(counter)
-    for i in range(8):
-        push(nonce, counter_bytes[i])
-    end
+    let nonce = [0, 0, 0, 0] + counter_bytes
     
     # AEAD encrypt
     let aead_out = aead.chacha20_poly1305_encrypt(key, nonce, plaintext, [])
@@ -54,28 +51,13 @@ proc encrypt_frame(key, counter, plaintext):
     let tag = aead_out["tag"]
     
     # Construct final frame payload: counter (8 bytes) + ciphertext + tag
-    let payload = []
-    for i in range(8):
-        push(payload, counter_bytes[i])
-    end
-    for i in range(len(ciphertext)):
-        push(payload, ciphertext[i])
-    end
-    for i in range(len(tag)):
-        push(payload, tag[i])
-    end
+    let payload = counter_bytes + ciphertext + tag
     
     # Total length of payload is 8 + len(ciphertext) + 16
     let len_bytes = uint32_to_bytes(len(payload))
     
     # Prefix with length (4 bytes)
-    let frame_bytes = []
-    for i in range(4):
-        push(frame_bytes, len_bytes[i])
-    end
-    for i in range(len(payload)):
-        push(frame_bytes, payload[i])
-    end
+    let frame_bytes = len_bytes + payload
     
     return utils.bytes(frame_bytes)
 
@@ -85,31 +67,18 @@ proc decrypt_frame(key, window, frame_payload_bytes):
         return nil
     end
     
-    let counter_bytes = []
-    for i in range(8):
-        push(counter_bytes, frame_payload_bytes[i])
-    end
+    let counter_bytes = slice(frame_payload_bytes, 0, 8)
     let counter = bytes_to_uint64(counter_bytes)
     
     if not replay_window.check_replay(window, counter):
         return nil
     end
     
-    let ciphertext = []
     let tag_start = len(frame_payload_bytes) - 16
-    for i in range(8, tag_start):
-        push(ciphertext, frame_payload_bytes[i])
-    end
+    let ciphertext = slice(frame_payload_bytes, 8, tag_start)
+    let tag = slice(frame_payload_bytes, tag_start, len(frame_payload_bytes))
     
-    let tag = []
-    for i in range(tag_start, len(frame_payload_bytes)):
-        push(tag, frame_payload_bytes[i])
-    end
-    
-    let nonce = [0, 0, 0, 0]
-    for i in range(8):
-        push(nonce, counter_bytes[i])
-    end
+    let nonce = [0, 0, 0, 0] + counter_bytes
     
     let decrypted = aead.chacha20_poly1305_decrypt(key, nonce, ciphertext, tag, [])
     if decrypted == nil:

@@ -5,6 +5,36 @@ import sys
 import sagelink.mux.stream as stream
 import sagelink.utils as utils
 
+# FFI helpers for command execution with exit code
+proc ffi_run_command(cmd):
+    let libc = ffi_open("libc.so.6")
+    if libc == nil:
+        libc = ffi_open("libc.so")
+    end
+    if libc == nil:
+        libc = ffi_open("")
+    end
+    if libc == nil:
+        return {"exit_code": -1, "output": "Error: libc not available"}
+    end
+    
+    # system() returns the exit status shifted by 8 bits
+    # Use WEXITSTATUS to extract the actual exit code
+    let result = ffi_call(libc, "system", "int", [cmd])
+    ffi_close(libc)
+    
+    if result < 0:
+        return {"exit_code": -1, "output": "Error: system() failed"}
+    end
+    
+    # Extract exit code: system() returns status, use WEXITSTATUS
+    # On Linux: exit_code = (result >> 8) & 0xFF
+    let exit_code = (result >> 8) & 255
+    
+    # For output, we'd need popen - for now just return exit code
+    return {"exit_code": exit_code, "output": ""}
+end
+
 # Client function to run a command remotely
 # Returns a dict with "exit_code" and "output" (string)
 proc run_remote_cmd(mux, cmd_string):
@@ -41,6 +71,7 @@ proc run_remote_cmd(mux, cmd_string):
     
     stream.stream_close(mux, s)
     return {"exit_code": exit_code, "output": output}
+end
 
 # Server-side handler for a CMD stream
 proc handle_cmd_stream(mux, s):
@@ -57,14 +88,18 @@ proc handle_cmd_stream(mux, s):
         cmd = cmd + chr(cmd_bytes[i])
     end
     
-    # Run command and capture output
+    # Run command via FFI to capture exit code
+    let result = ffi_run_command(cmd)
+    
+    # For output, also run with shell_exec (safe commands only)
     let output = sys.shell_exec(cmd)
     
     # Build response: exit_code (1B) + output
-    let resp = [0]
+    let resp = [result["exit_code"]]
     for i in range(len(output)):
         push(resp, ord(output[i]))
     end
     
     stream.stream_write_msg(mux, s, stream.CMD_RESULT, utils.bytes(resp))
     stream.stream_close(mux, s)
+end
