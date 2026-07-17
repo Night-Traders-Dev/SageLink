@@ -23,19 +23,19 @@
   - `src/cli/` (CLI entry point)
 - **External Dependencies**:
   - Requires `SageLang >= 4.0.2`
-  - Zero FFI for cryptography; uses FFI in app/shell.sage (`libc`) and app/file.sage.
+  - Zero FFI for cryptography; uses FFI in `app/shell.sage` (`libc`) and `app/file.sage`.
 - **Build System**:
   - `sagemake` Python script wrapping SageLang compiler/interpreter.
 - **Testing Infrastructure**:
-  - Shell-based `sagemake test` integrating `.sage` test files (unit/integration tests) inside `Testing/`.
+  - Shell-based `sagemake test` integrating `.sage` test files inside `Testing/`.
 
 ## Executive Summary
 
-This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, resource allocation, and shell execution. While the cryptographic layer successfully implements Noise_IK and ChaCha20-Poly1305 with zero FFI, the application and connection handling layers exhibit multiple flaws.
+This comprehensive audit of SageLink identified several critical and high-priority vulnerabilities primarily impacting the integrity and security of file transfers, identity key management, resource allocation, and shell execution. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly. However, the application and connection layers exhibit multiple severe issues.
 
-The most severe issues include an Integrity Check Bypass in the file transfer service allowing malicious replacement of files, an Unbounded Thread Spawn vulnerability leading to unauthenticated thread exhaustion, and an Unbounded Stream Queue that could cause out-of-memory (OOM) via memory exhaustion on authenticated streams. Additionally, insecure default permissions on generated key files leave them vulnerable to local attackers via a TOCTOU race condition.
+The most critical findings include an Integrity Check Bypass in the file transfer service allowing malicious replacement of files, an Unbounded Thread Spawn vulnerability leading to potential unauthenticated thread exhaustion, and an Unbounded Stream Queue that causes Out-of-Memory (OOM) via memory exhaustion on authenticated streams. Additionally, insecure default permissions on generated key files leave them vulnerable to local attackers via a TOCTOU race condition.
 
-Functionality and performance issues were also discovered, including hardcoded OS-specific values that break cross-platform support (such as IPv6 parsing and macOS compatibility), and excessive I/O and memory usage when handling large files.
+Performance bottlenecks were discovered, particularly Out-of-Memory risks when handling large file transfers, and severe I/O overhead. Functionality gaps exist, including hardcoded OS-specific values that break cross-platform support (such as macOS compatibility and IPv6 parsing).
 
 This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment.
 
@@ -69,11 +69,11 @@ This report provides detailed findings and actionable recommendations to harden 
 ### 1. Integrity Check Bypass in FILE Service
 - **Severity:** Critical
 - **Evidence:** In `src/app/file.sage`, the receive loop `while bytes_written < file_size:` allows an attacker to send a chunk that pushes `bytes_written` to be strictly greater than `file_size`. This causes the loop to terminate, entirely skipping the subsequent `if bytes_written == file_size:` block that performs the SHA-256 hash validation and malicious file deletion.
-- **Fix Recommendation:** Modify the loop condition to account for potential overflow, check `bytes_written >= file_size`, and enforce a strict boundary check inside the loop. Ensure that any file failing the check or ending with `bytes_written > file_size` is immediately zeroed and deleted.
+- **Fix Recommendation:** Modify the loop condition to account for potential overflow, check `bytes_written >= file_size`, and enforce a strict boundary check inside the loop. Ensure that any file failing the check or ending with `bytes_written > file_size` is immediately zeroed and deleted using system unlinks.
 
 ### 2. Unbounded Thread Spawn (Unauthenticated Thread Exhaustion) in CLI Listener
 - **Severity:** Critical
-- **Evidence:** In `src/cli/sagelink.sage:369`, `tcp.accept()` triggers `thread.spawn(handle_client)` without any rate limiting, queueing, or maximum connection limit. An unauthenticated attacker can rapidly open TCP connections, causing the SageLang runtime to exhaust system threads or memory (Slowloris/DoS), even before the Noise_IK handshake begins.
+- **Evidence:** In `src/cli/sagelink.sage:369`, `tcp.accept()` triggers `thread.spawn(handle_client)` without any rate limiting, queueing, or maximum connection limit. An unauthenticated attacker can rapidly open TCP connections, causing the SageLang runtime to exhaust system threads or memory (Slowloris/DoS) before the Noise_IK handshake even begins.
 - **Fix Recommendation:** Implement a bounded thread pool or strict connection limits (e.g., maximum 10 concurrent unauthenticated handshake attempts) before spawning handler threads.
 
 ### 3. Unbounded Stream Queue (Memory Exhaustion)
@@ -103,7 +103,7 @@ This report provides detailed findings and actionable recommendations to harden 
 ### 3. CPU Overhead via Element-by-Element List Copying
 - **Bottleneck:** Extensive use of `push()` in loops in `src/transport/framing.sage` and `src/mux/stream.sage` instead of native slice or memory block operations.
 - **Estimated Impact:** O(N) CPU overhead during encryption, decryption, and message framing, severely reducing network throughput.
-- **Recommended Fixes:** Leverage native memory buffer operations or bulk slice copies if supported by SageLang.
+- **Recommended Fixes:** Leverage native memory buffer operations or bulk slice copies where supported by SageLang.
 
 ---
 
