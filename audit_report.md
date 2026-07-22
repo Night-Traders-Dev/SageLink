@@ -24,7 +24,7 @@
   - `src/cli/` (CLI entry point)
 - **External Dependencies**:
   - Requires `SageLang >= 4.0.2`
-  - Zero FFI for cryptography; uses FFI in `app/shell.sage` (`libc`) and `app/file.sage`.
+  - Zero FFI for cryptography; uses FFI in `app/shell.sage` (`libc`), `app/file.sage`, and `app/cmd.sage`.
 - **Build System**:
   - `sagemake` Python script wrapping SageLang compiler/interpreter.
 - **Testing Infrastructure**:
@@ -45,6 +45,7 @@ This report provides detailed findings and actionable recommendations to harden 
 3. **[Medium]** Unbounded Thread Spawn for Authenticated Clients.
 4. **[Medium]** Polling Loop CPU Overhead in stream reading.
 5. **[Medium]** O(N) Array Operations (List Copying) Overhead.
+6. **[Low]** Linear Probe for Stream IDs allocation.
 
 ## Repository Health Score
 
@@ -86,6 +87,11 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Bottlenecks:** Extensive use of element-by-element list copying (e.g. `push()` in loops) instead of native memory operations is prevalent in `src/transport/framing.sage` and payload serialization.
 - **Estimated Impact:** High CPU usage and decreased throughput for large messages due to O(N) element-wise operations.
 - **Recommended Fixes:** Use native slice operations or memory copy utilities where possible to manipulate byte buffers.
+
+### 3. Linear Probe for Stream IDs
+- **Bottlenecks:** `mux_open_stream` in `src/mux/stream.sage` checks up to 65536 stream IDs sequentially in a while loop.
+- **Estimated Impact:** O(N) degraded stream opening times when many streams are concurrently opened.
+- **Recommended Fixes:** Implement an efficient ID allocator such as a free-list or a bitmap to quickly find unused stream IDs.
 
 ---
 
