@@ -24,7 +24,7 @@
   - `src/cli/` (CLI entry point)
 - **External Dependencies**:
   - Requires `SageLang >= 4.0.2`
-  - Zero FFI for cryptography; uses FFI in `app/shell.sage` (`libc`) and `app/file.sage`.
+  - Zero FFI for cryptography; uses FFI in `app/cmd.sage` (`libc`) and `app/shell.sage` (`libc`).
 - **Build System**:
   - `sagemake` Python script wrapping SageLang compiler/interpreter.
 - **Testing Infrastructure**:
@@ -32,7 +32,7 @@
 
 ## Executive Summary
 
-This comprehensive audit of SageLink identified several vulnerabilities primarily impacting identity key management, command execution, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly. The development team has successfully mitigated many critical issues previously identified (e.g., Unbounded Unauthenticated Thread Spawn, IPv6 parsing failures, Integrity Check Bypass in file transfers, and Out-of-Memory risks from whole-file buffering).
+This comprehensive audit of SageLink identified several vulnerabilities primarily impacting identity key management, command execution side effects, thread handling, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly. The development team has successfully mitigated many critical issues previously identified (e.g., Unbounded Unauthenticated Thread Spawn, IPv6 parsing failures, Integrity Check Bypass in file transfers, and Out-of-Memory risks from whole-file buffering).
 
 The most critical remaining findings include an insecure default permission generation process for identity keys via a TOCTOU race condition, and a double-execution bug in the CMD service that could lead to unintended remote side-effects.
 
@@ -40,11 +40,11 @@ This report provides detailed findings and actionable recommendations to harden 
 
 ## Top 10 issues ranked by impact
 
-1. **[High]** Insecure Default Permissions (TOCTOU) for identity keys.
-2. **[High]** Double Execution of Commands in CMD service.
-3. **[Medium]** Unbounded Thread Spawn for Authenticated Clients.
+1. **[High]** Insecure Default Permissions (TOCTOU) for identity keys in `keygen`.
+2. **[High]** Double Execution of Commands in CMD service leading to duplicate side effects.
+3. **[Medium]** Unbounded Thread Spawn for Authenticated Clients in Stream Dispatcher.
 4. **[Medium]** Polling Loop CPU Overhead in stream reading.
-5. **[Medium]** O(N) Array Operations (List Copying) Overhead.
+5. **[Medium]** O(N) Array Operations (List Copying) Overhead in payload building.
 
 ## Repository Health Score
 
@@ -60,18 +60,18 @@ This report provides detailed findings and actionable recommendations to harden 
 
 ### 1. Insecure Default Permissions (TOCTOU) for Identity Keys
 - **Severity:** High
-- **Findings / Evidence:** In `src/cli/sagelink.sage`, `io.writefile(tmp_key, priv_b64 + "\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the `chmod` command executes.
-- **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
+- **Findings / Evidence:** In `src/cli/sagelink.sage` around line 214, `io.writefile(tmp_key, priv_b64 + "\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key before the `chmod` command executes.
+- **Fix Recommendation:** Use `ffi_call` to call `umask(077)` before writing the file with `io.writefile`, and then restore the old mask, ensuring the file is atomically created with `0600` permissions.
 
 ### 2. Double Execution of Commands
 - **Severity:** High
-- **Findings / Evidence:** In `src/app/cmd.sage`, `handle_cmd_stream` executes the command string twice. First, it runs `ffi_run_command(cmd)` to capture the exit code via `system()`. Then, it runs `sys.shell_exec(cmd)` to capture the standard output. This can lead to unintended side-effects on the host system (e.g., if a command modifies state or deletes files, it will run twice).
-- **Fix Recommendation:** Use `popen` or a similar construct via FFI to execute the command exactly once, capturing both the standard output and the exit code simultaneously.
+- **Findings / Evidence:** In `src/app/cmd.sage`, `handle_cmd_stream` executes the command string twice. First, it runs `ffi_run_command(cmd)` to capture the exit code via `system()`. Then, it runs `sys.shell_exec(cmd)` to capture the standard output. This will cause side-effect-heavy commands (like `rm`, `mv`, or database writes) to be executed twice.
+- **Fix Recommendation:** Use `ffi_call` with `system()` to redirect the command's output to a temporary file (e.g. `cmd > tmp.out 2>&1`), capture the exit code, read the temporary file, and then delete it. This ensures the command only executes once.
 
 ### 3. Unbounded Thread Spawn for Authenticated Clients
 - **Severity:** Medium
 - **Findings / Evidence:** In `src/cli/sagelink.sage`, the `server_stream_dispatcher` spawns threads without limits for authenticated peers (`thread.spawn(run_cmd)`, `thread.spawn(run_file)`, `thread.spawn(run_shell)`). While unauthenticated connections are now bounded, an authenticated peer could still cause resource exhaustion by opening thousands of concurrent streams.
-- **Fix Recommendation:** Implement a maximum limit on concurrent open streams per connection.
+- **Fix Recommendation:** Implement a maximum limit on concurrent open streams per connection, for example by adding an active stream counter protected by a mutex in the mux state.
 
 ---
 
@@ -80,12 +80,12 @@ This report provides detailed findings and actionable recommendations to harden 
 ### 1. Polling Loop CPU Overhead
 - **Bottlenecks:** `stream_read_msg` relies on a tight polling loop `while true: ... thread.sleep(0.005)` in `src/mux/stream.sage`. Similar loops exist for rekeying state checks.
 - **Estimated Impact:** Constant CPU utilization on embedded devices even when idle, leading to increased power consumption and thermal load.
-- **Recommended Fixes:** Implement a blocking channel or condition variable mechanism for stream message reading to yield the CPU entirely when no messages are pending.
+- **Recommended Fixes:** Implement a blocking channel or condition variable mechanism for stream message reading to yield the CPU entirely when no messages are pending, if supported by SageLang's thread module.
 
 ### 2. O(N) Array Operations (List Copying) Overhead
-- **Bottlenecks:** Extensive use of element-by-element list copying (e.g. `push()` in loops) instead of native memory operations is prevalent in `src/transport/framing.sage` and payload serialization.
+- **Bottlenecks:** Extensive use of element-by-element list copying (e.g. `push()` in loops) instead of native memory operations is present in `src/app/cmd.sage` and other payload serialization logic.
 - **Estimated Impact:** High CPU usage and decreased throughput for large messages due to O(N) element-wise operations.
-- **Recommended Fixes:** Use native slice operations or memory copy utilities where possible to manipulate byte buffers.
+- **Recommended Fixes:** Use native slice operations, `utils.bytes()`, or memory copy utilities where possible to manipulate byte buffers efficiently.
 
 ---
 

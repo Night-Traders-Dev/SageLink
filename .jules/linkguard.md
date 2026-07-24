@@ -10,12 +10,12 @@
 
 ## Performance bottlenecks
 - **Polling Loop CPU Overhead:** Code using `thread.sleep(0.005)` in tight while loops (like waiting for stream messages in `src/mux/stream.sage` or rekeying state checks) wastes CPU cycles on embedded devices; a proper blocking condition variable or channel mechanism would be more efficient.
-- **List Copying Overhead:** Extensive use of element-by-element list copying (e.g. `push()` in loops) instead of native memory operations (due to SageLang constraints) introduces O(N) CPU overhead in the transport layer and multiplexing paths. This is a recurring performance bottleneck.
+- **List Copying Overhead:** Extensive use of element-by-element list copying (e.g. `push()` in loops) instead of native memory operations (due to SageLang constraints) introduces O(N) CPU overhead. This is confirmed to exist in `src/app/cmd.sage` (`push` in loops to build payload arrays).
 - **Multiplexer ID Resolution:** Stream ID assignment uses a linear probe with up to 65536 retries in `mux_open_stream`. While it avoids collisions, this is an O(N) algorithm that can degrade if many streams are concurrently open.
 
 ## Architectural weaknesses
 - **Unauthenticated Queue Hallucination:** Previous audits assumed streams had unauthenticated queues. Streams are multiplexed only *after* the Noise_IK handshake establishes an authenticated session.
-- **Path Traversal Hallucination:** The FILE service's sanitization logic (`if c == '/' or c == '\\': filename = ''`) effectively strips all parent directory components by extracting the basename, making it safe from traversal attacks. Previous assumptions about `..` vulnerability were incorrect.
+- **Path Traversal Hallucination:** The FILE service's sanitization logic (`if c == '/' or c == '\': filename = ''`) effectively strips all parent directory components by extracting the basename, making it safe from traversal attacks. Previous assumptions about `..` vulnerability were incorrect.
 
 ## Reliability risks
 - **Unbounded Authenticated Thread Spawn:** The stream dispatcher spawns threads (`run_cmd`, `run_file`, `run_shell`) without limits for authenticated peers in `src/cli/sagelink.sage`, allowing authenticated attackers to cause thread exhaustion by opening too many streams.
