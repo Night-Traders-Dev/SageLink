@@ -42,14 +42,14 @@ This report provides detailed findings and actionable recommendations to harden 
 
 1. **[Critical]** OOM / DoS via Unvalidated Service Type String Concatenation
 2. **[Critical]** OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers
-3. **[High]** Double Execution of Commands in CMD Service
-4. **[High]** Insecure Default Permissions (TOCTOU) for Identity Keys
-5. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
-6. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
-7. **[Medium]** Polling Loop CPU Overhead in Stream Reading and Rekeying
-8. **[Medium]** O(N) Array Operations (List Copying) Overhead
-9. **[Low]** Potential Integer Overflow/Errors in Port Parsing
-10. **[Low]** Linear Probing Overhead in Stream ID Resolution
+3. **[High]** OOB Memory Read in PTY Name Resolution
+4. **[High]** Double Execution of Commands in CMD Service
+5. **[High]** Insecure Default Permissions (TOCTOU) for Identity Keys
+6. **[Medium]** Inconsistent Command Execution Behavior with Unsafe Characters
+7. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
+8. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
+9. **[Medium]** Polling Loop CPU Overhead in Stream Reading and Rekeying
+10. **[Medium]** O(N) Array Operations (List Copying) Overhead
 
 ## Repository Health Score
 
@@ -93,6 +93,12 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Findings / Evidence:** In `src/mux/stream.sage`, each stream restricts queue depth via `max_queue_size = 1000`. However, the messages are completely unbounded in byte size (up to 1MB each). An attacker can easily store 1GB (1000 * 1MB) of data in memory per stream, leading to OOM.
 - **Fix Recommendation:** Implement backpressure or rate limiting based on total bytes in the queue, not just the raw message count.
 
+
+### 7. OOB Memory Read in PTY Name Resolution
+- **Severity:** High
+- **Findings / Evidence:** In `src/app/shell.sage`, the return value of `ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])` is ignored. If `ptsname_r` fails, the `name_buf` is uninitialized, but the subsequent `while true` loop unconditionally iterates using `mem_read` until it finds a null byte. This can lead to an out-of-bounds (OOB) memory read and a crash.
+- **Fix Recommendation:** Check the return value of `ptsname_r` before iterating over `name_buf`. If it returns a non-zero error code, handle the failure appropriately and close the stream.
+
 ---
 
 ## Performance Report
@@ -125,7 +131,9 @@ This report provides detailed findings and actionable recommendations to harden 
 - FILE transfers with streaming memory buffers.
 
 ### Broken Features
-- None identified in this review cycle.
+- **Inconsistent Execution Models in CMD Service**: In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
+
+
 
 ### Missing Coverage
 - Missing tests validating that maliciously oversized file chunks correctly trigger validation failures.
