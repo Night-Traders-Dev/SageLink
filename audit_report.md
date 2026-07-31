@@ -34,7 +34,7 @@
 
 This comprehensive LinkGuard audit of SageLink identified several vulnerabilities primarily impacting memory management, file permissions, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly, and many critical issues from previous iterations have been resolved.
 
-However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Additionally, the CMD service executes logic twice, leading to unintended side-effects on the host system.
+However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system.
 
 This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment. All reported issues are firmly grounded in tracing the actual code implementation.
 
@@ -42,26 +42,27 @@ This report provides detailed findings and actionable recommendations to harden 
 
 1. **[Critical]** OOM / DoS via Unvalidated Service Type String Concatenation
 2. **[Critical]** OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers
-3. **[High]** OOB Memory Read in PTY Name Resolution
-4. **[High]** Double Execution of Commands in CMD Service
-5. **[High]** Insecure Default Permissions (TOCTOU) for Identity Keys
-6. **[Medium]** Inconsistent Command Execution Behavior with Unsafe Characters
-7. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
-8. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
-9. **[Medium]** Polling Loop CPU Overhead in Stream Reading and Rekeying
-10. **[Medium]** O(N) Array Operations (List Copying) Overhead
+3. **[High]** Shell Process Leak (Orphan/Zombie) due to `system('/bin/sh')`
+4. **[High]** OOB Memory Read in PTY Name Resolution
+5. **[High]** Double Execution of Commands in CMD Service
+6. **[High]** Insecure Default Permissions (TOCTOU) for Identity Keys
+7. **[Medium]** Inconsistent Command Execution Behavior with Unsafe Characters
+8. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
+9. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
+10. **[Medium]** Polling Loop CPU Overhead in Stream Reading and Rekeying
 
 ## Repository Health Score
 
 - Security: 6/10
 - Performance: 5/10
-- Reliability: 6/10
+- Reliability: 5/10
 - Maintainability: 8/10
 - Documentation: 9/10
 
 ---
 
 ## Security Report
+
 
 ### 1. OOM / DoS via Unvalidated Service Type String Concatenation
 - **Severity:** Critical
@@ -73,31 +74,40 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Findings / Evidence:** In `src/app/file.sage` (`handle_file_stream`) and `src/app/shell.sage` (`handle_shell_stream`), `mem_alloc(len(chunk_data))` and `mem_alloc(count)` are called based on the size of the incoming payload, up to 1MB. This can exhaust heap memory rapidly if multiple streams receive large frames simultaneously.
 - **Fix Recommendation:** Limit chunk size bounds strictly or process writes in fixed-size internal buffers rather than allocating memory matching the incoming network frame.
 
-### 3. Double Execution of Commands
+### 3. Shell Process Leak (Orphan/Zombie) due to `system('/bin/sh')`
+- **Severity:** High
+- **Findings / Evidence:** In `src/app/shell.sage`, the child process executing the shell uses `ffi_call(libc, "system", "int", ["/bin/sh"])` instead of `exec`. Because `system()` forks a new process to run the shell, when the parent later cleans up the session using `ffi_call(libc, "kill", "int", [pid, 9])`, it only kills the intermediate child process. The actual `/bin/sh` process is orphaned and left running, causing a severe process/resource leak on the host system.
+- **Fix Recommendation:** Replace the `system()` call with an `exec` family function (e.g., `execl("/bin/sh", "sh", NULL)`) so the shell replaces the child process, allowing the parent's `kill` signal to correctly terminate the shell.
+
+### 4. OOB Memory Read in PTY Name Resolution
+- **Severity:** High
+- **Findings / Evidence:** In `src/app/shell.sage`, the return value of `ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])` is ignored. If `ptsname_r` fails, the `name_buf` is uninitialized, but the subsequent `while true` loop unconditionally iterates using `mem_read` until it finds a null byte. This can lead to an out-of-bounds (OOB) memory read and a crash.
+- **Fix Recommendation:** Check the return value of `ptsname_r` before iterating over `name_buf`. If it returns a non-zero error code, handle the failure appropriately and close the stream.
+
+### 5. Double Execution of Commands
 - **Severity:** High
 - **Findings / Evidence:** In `src/app/cmd.sage`, `handle_cmd_stream` executes the command string twice. First, it runs `ffi_run_command(cmd)` to capture the exit code via `system()`. Then, it runs `sys.shell_exec(cmd)` to capture the standard output. This leads to unintended side-effects on the host system, executing mutating commands twice.
 - **Fix Recommendation:** Use a unified approach (e.g., pipe/popen) to capture both the output and the exit code from a single execution instance.
 
-### 4. Insecure Default Permissions (TOCTOU) for Identity Keys
+### 6. Insecure Default Permissions (TOCTOU) for Identity Keys
 - **Severity:** High
 - **Findings / Evidence:** In `src/cli/sagelink.sage`, `io.writefile(tmp_key, priv_b64 + "\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
 
-### 5. Unbounded Thread Spawn for Authenticated Clients
+### 7. Inconsistent Command Execution Behavior with Unsafe Characters
+- **Severity:** Medium
+- **Findings / Evidence:** In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
+- **Fix Recommendation:** Use a unified execution approach.
+
+### 8. Unbounded Thread Spawn for Authenticated Clients
 - **Severity:** Medium
 - **Findings / Evidence:** In `src/cli/sagelink.sage`, the `server_stream_dispatcher` spawns threads without limits for authenticated peers (`thread.spawn(run_cmd)`, `thread.spawn(run_file)`, `thread.spawn(run_shell)`). An authenticated peer could maliciously open thousands of concurrent streams, causing resource exhaustion.
 - **Fix Recommendation:** Implement a maximum limit on concurrent open streams per authenticated connection.
 
-### 6. OOM / DoS via Stream Queue Message Accumulation
+### 9. OOM / DoS via Stream Queue Message Accumulation
 - **Severity:** Medium
 - **Findings / Evidence:** In `src/mux/stream.sage`, each stream restricts queue depth via `max_queue_size = 1000`. However, the messages are completely unbounded in byte size (up to 1MB each). An attacker can easily store 1GB (1000 * 1MB) of data in memory per stream, leading to OOM.
 - **Fix Recommendation:** Implement backpressure or rate limiting based on total bytes in the queue, not just the raw message count.
-
-
-### 7. OOB Memory Read in PTY Name Resolution
-- **Severity:** High
-- **Findings / Evidence:** In `src/app/shell.sage`, the return value of `ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])` is ignored. If `ptsname_r` fails, the `name_buf` is uninitialized, but the subsequent `while true` loop unconditionally iterates using `mem_read` until it finds a null byte. This can lead to an out-of-bounds (OOB) memory read and a crash.
-- **Fix Recommendation:** Check the return value of `ptsname_r` before iterating over `name_buf`. If it returns a non-zero error code, handle the failure appropriately and close the stream.
 
 ---
 
