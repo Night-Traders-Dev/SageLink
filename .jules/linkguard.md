@@ -7,6 +7,7 @@
 - Authentication relies on pinned X25519 static keypairs configured via peers.toml.
 
 ## Recurring vulnerabilities
+- Process/Resource Leaks: Using `system()` instead of `exec` to spawn long-running child processes causes the parent to lose direct tracking of the actual application (e.g., shell), leading to orphaned processes and resource leaks when the parent attempts to clean up the intermediate `system()` shell process.
 - Time-of-Check to Time-of-Use (TOCTOU) file permission vulnerabilities during sensitive file creation (e.g., identity keys).
 - Command execution risks involving double-execution patterns that could lead to unintended remote side-effects.
 - Denial of Service (DoS) risks due to lack of bounding on memory allocations (e.g., reading unvalidated payload sizes up to 1MB or creating unbounded thread instances for authenticated streams).
