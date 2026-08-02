@@ -34,7 +34,7 @@
 
 This comprehensive LinkGuard audit of SageLink identified several vulnerabilities primarily impacting memory management, file permissions, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly, and many critical issues from previous iterations have been resolved.
 
-However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system.
+However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system. The hardcoding of C struct offsets introduces severe cross-platform compatibility issues, notably during `fstat` and `winsize` calculations. Lack of timeouts in the handshake and stream reading also exposes the service to Slowloris-style denial-of-service attacks.
 
 This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment. All reported issues are firmly grounded in tracing the actual code implementation.
 
@@ -46,23 +46,24 @@ This report provides detailed findings and actionable recommendations to harden 
 4. **[High]** OOB Memory Read in PTY Name Resolution
 5. **[High]** Double Execution of Commands in CMD Service
 6. **[High]** Insecure Default Permissions (TOCTOU) for Identity Keys
-7. **[Medium]** Inconsistent Command Execution Behavior with Unsafe Characters
-8. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
-9. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
-10. **[Medium]** Polling Loop CPU Overhead in Stream Reading and Rekeying
+7. **[High]** Cross-Platform Breakage via Hardcoded Struct Offsets
+8. **[Medium]** DoS via Lack of Network Timeouts
+9. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
+10. **[Medium]** Inconsistent Command Execution Behavior with Unsafe Characters
+11. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
+12. **[Medium]** Linear Probing Overhead in Stream ID Resolution
 
 ## Repository Health Score
 
-- Security: 6/10
+- Security: 5/10
 - Performance: 5/10
-- Reliability: 5/10
-- Maintainability: 8/10
+- Reliability: 4/10
+- Maintainability: 7/10
 - Documentation: 9/10
 
 ---
 
 ## Security Report
-
 
 ### 1. OOM / DoS via Unvalidated Service Type String Concatenation
 - **Severity:** Critical
@@ -94,17 +95,27 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Findings / Evidence:** In `src/cli/sagelink.sage`, `io.writefile(tmp_key, priv_b64 + "\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key.
 - **Fix Recommendation:** Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
 
-### 7. Inconsistent Command Execution Behavior with Unsafe Characters
-- **Severity:** Medium
-- **Findings / Evidence:** In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
-- **Fix Recommendation:** Use a unified execution approach.
+### 7. Cross-Platform Breakage via Hardcoded Struct Offsets
+- **Severity:** High
+- **Findings / Evidence:** In `src/app/file.sage`, `mem_read(stat_buf, 48, "u64")` assumes `st_size` is at offset 48, which is only valid on Linux x86_64, causing incorrect file size readings on other platforms (e.g., macOS or ARM64). Similarly, in `src/app/shell.sage`, the `winsize` struct manipulation relies on a hardcoded 8-byte format.
+- **Fix Recommendation:** Use cross-platform libraries or calculate offsets dynamically using C headers.
 
 ### 8. Unbounded Thread Spawn for Authenticated Clients
 - **Severity:** Medium
 - **Findings / Evidence:** In `src/cli/sagelink.sage`, the `server_stream_dispatcher` spawns threads without limits for authenticated peers (`thread.spawn(run_cmd)`, `thread.spawn(run_file)`, `thread.spawn(run_shell)`). An authenticated peer could maliciously open thousands of concurrent streams, causing resource exhaustion.
 - **Fix Recommendation:** Implement a maximum limit on concurrent open streams per authenticated connection.
 
-### 9. OOM / DoS via Stream Queue Message Accumulation
+### 9. DoS via Lack of Network Timeouts
+- **Severity:** Medium
+- **Findings / Evidence:** In `src/cli/sagelink.sage` and `src/mux/stream.sage`, network operations such as `tcp.recvall` wait indefinitely. This allows an attacker to open connections and hold them open without sending data, exhausting the connection pool and worker threads (Slowloris attack).
+- **Fix Recommendation:** Implement read and write timeouts on the TCP sockets to disconnect idle or slow peers.
+
+### 10. Inconsistent Command Execution Behavior with Unsafe Characters
+- **Severity:** Medium
+- **Findings / Evidence:** In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
+- **Fix Recommendation:** Use a unified execution approach.
+
+### 11. OOM / DoS via Stream Queue Message Accumulation
 - **Severity:** Medium
 - **Findings / Evidence:** In `src/mux/stream.sage`, each stream restricts queue depth via `max_queue_size = 1000`. However, the messages are completely unbounded in byte size (up to 1MB each). An attacker can easily store 1GB (1000 * 1MB) of data in memory per stream, leading to OOM.
 - **Fix Recommendation:** Implement backpressure or rate limiting based on total bytes in the queue, not just the raw message count.
@@ -128,6 +139,11 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Estimated Impact:** Noticeable delay when establishing streams under moderate concurrency.
 - **Recommended Fixes:** Maintain an independent free-list array or optimized random allocation scheme to avoid linear traversal.
 
+### 4. Synchronous DH Computations
+- **Bottlenecks:** In `src/mux/stream.sage` (`handle_rekey_responder`), the DH computation (`noise_ik.initialize_handshake`) blocks the entire reader thread while executing.
+- **Estimated Impact:** Stalls all concurrent streams for the duration of the DH computation.
+- **Recommended Fixes:** Dispatch rekeying handshakes to a background worker thread.
+
 ---
 
 ## Functionality Report
@@ -137,13 +153,11 @@ This report provides detailed findings and actionable recommendations to harden 
 - CMD execution with remote shell spawning and output capture.
 - Replay Protection via a 64-entry sliding bitmap in the transport layer.
 - Multiplexed Streams supporting overlapping operations on a single TCP socket.
-- Cross-platform SHELL compatibility logic (macOS and Linux).
 - FILE transfers with streaming memory buffers.
 
 ### Broken Features
 - **Inconsistent Execution Models in CMD Service**: In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
-
-
+- **Cross-Platform Breakage via Hardcoded Struct Offsets**: In `src/app/file.sage`, `mem_read(stat_buf, 48, "u64")` assumes `st_size` is at offset 48, which is only valid on Linux x86_64, causing incorrect file size readings on other platforms (e.g., macOS or ARM64). Similarly, in `src/app/shell.sage`, the `winsize` struct manipulation relies on a hardcoded 8-byte format.
 
 ### Missing Coverage
 - Missing tests validating that maliciously oversized file chunks correctly trigger validation failures.
