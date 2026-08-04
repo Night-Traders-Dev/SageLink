@@ -302,7 +302,7 @@ proc run_listen(port_str = nil):
             let bob_hs = noise_ik.initialize_handshake("responder", local_keys)
             
             # Read Msg 1 (expecting 128 bytes: 32 ephemeral + 48 encrypted static + 32 payload + 16 tag)
-            let msg1 = utils.to_list(tcp.recvall(sock, 128, true))
+            let msg1 = utils.to_list(tcp.recvall(sock, 128))
             if msg1 == nil:
                 print "Error: Handshake failed to read Msg 1"
                 tcp.close(sock)
@@ -488,7 +488,7 @@ proc run_connect(peer_name, mode = nil, p1 = nil, p2 = nil):
     tcp.sendall(sock, utils.bytes(msg1))
     
     # Read Msg 2 (expecting 80 bytes: 32 ephemeral + 32 payload + 16 tag)
-    let msg2 = utils.to_list(tcp.recvall(sock, 80, true))
+    let msg2 = utils.to_list(tcp.recvall(sock, 80))
     if msg2 == nil:
         print "Error: Handshake failed to read Msg 2"
         tcp.close(sock)

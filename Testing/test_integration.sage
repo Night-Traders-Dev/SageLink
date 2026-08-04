@@ -10,14 +10,22 @@ import sagelink.mux.stream as stream
 import sagelink.app.cmd as cmd
 import sagelink.app.file as file_app
 import sagelink.app.shell as shell_app
+import sagelink.utils as utils
 
 proc to_list(b):
     if b == nil:
         return nil
     end
     let out = []
-    for i in range(len(b)):
-        push(out, b[i])
+    let t = type(b)
+    if t == "string" or t == "str":
+        for i in range(len(b)):
+            push(out, ord(b[i]))
+        end
+    else:
+        for i in range(len(b)):
+            push(out, b[i])
+        end
     end
     return out
 
@@ -42,33 +50,37 @@ let bob_keys = {"priv": bob_priv, "pub": bob_pub}
 
 # Server (Bob) execution target
 proc run_server():
-    print "Server: Listening on 127.0.0.1:7420..."
-    let listener = tcp.listen("127.0.0.1", 7420)
+    let port = 7435
+    print "Server: Listening on 127.0.0.1:" + str(port) + "..."
+    let listener = tcp.listen("127.0.0.1", port)
     if listener == nil:
         print "Server: Failed to listen"
         return
     end
     
-    let sock = tcp.accept(listener)
-    if sock == nil:
-        print "Server: Failed to accept connection"
-        tcp.close(listener)
-        return
-    end
-    print "Server: Client connected! Performing Noise_IK handshake..."
+    let sock = nil
+    let msg1 = nil
+    let bob_hs = nil
+    let attempts = 0
     
-    # Handshake (Responder)
-    let bob_hs = noise_ik.initialize_handshake("responder", bob_keys)
-    
-    # Read Msg 1 (Alice -> Bob)
-    # Wait, how long is msg1? 119 bytes. We can read it from socket using recvall
-    print "Server: Reading Msg 1 (expecting 119 bytes)..."
-    let msg1 = to_list(tcp.recvall(sock, 119, true))
-    if msg1 == nil:
-        print "Server: Handshake failed to read Msg 1"
-        tcp.close(sock)
-        tcp.close(listener)
-        return
+    while msg1 == nil:
+        sock = tcp.accept(listener)
+        if sock == nil or sock < 0:
+            thread.sleep(0.01)
+            continue
+        end
+        print "Server: Client connected! Performing Noise_IK handshake..."
+        
+        # Handshake (Responder)
+        bob_hs = noise_ik.initialize_handshake("responder", bob_keys)
+        
+        # Read Msg 1 (Alice -> Bob)
+        print "Server: Reading Msg 1 (expecting 119 bytes)..."
+        msg1 = to_list(tcp.recvall(sock, 119))
+        if msg1 == nil:
+            print "Server: Connection closed before Msg 1. Retrying accept..."
+            tcp.close(sock)
+        end
     end
     print "Server: Msg 1 read (length: " + str(len(msg1)) + "). Parsing..."
     
@@ -82,7 +94,7 @@ proc run_server():
     
     # Write Msg 2 (Bob -> Alice)
     let msg2 = noise_ik.write_message_2(bob_hs, "Welcome, Alice! Glad to establish connection.")
-    tcp.sendall(sock, bytes(msg2))
+    tcp.sendall(sock, utils.bytes(msg2))
     
     # Deriving split keys
     let bob_transport = noise_ik.split_handshake(bob_hs)
@@ -129,9 +141,10 @@ proc run_server():
 
 # Client (Alice) execution target
 proc run_client():
+    let port = 7435
     thread.sleep(0.1) # Let server start
-    print "Client: Connecting to 127.0.0.1:7420..."
-    let sock = tcp.connect("127.0.0.1", 7420)
+    print "Client: Connecting to 127.0.0.1:" + str(port) + "..."
+    let sock = tcp.connect("127.0.0.1", port)
     if sock == nil:
         print "Client: Connection failed"
         return
@@ -143,10 +156,10 @@ proc run_client():
     print "Client: Handshake initialized. Writing message 1..."
     let msg1 = noise_ik.write_message_1(alice_hs, "Hello, Bob! I am Alice.")
     print "Client: Message 1 written. Sending message 1 (length: " + str(len(msg1)) + ")..."
-    tcp.sendall(sock, bytes(msg1))
+    tcp.sendall(sock, utils.bytes(msg1))
     print "Client: Message 1 sent. Reading message 2 (expecting 93 bytes)..."
     # Read Msg 2 (Bob -> Alice)
-    let msg2 = to_list(tcp.recvall(sock, 93, true))
+    let msg2 = to_list(tcp.recvall(sock, 93))
     if msg2 == nil:
         print "Client: Handshake failed to read Msg 2"
         tcp.close(sock)
@@ -217,7 +230,7 @@ proc run_client():
         for i in range(len(shell_cmd)):
             push(cmd_payload, ord(shell_cmd[i]))
         end
-        stream.stream_write_msg(mux, shell_s, stream.SHELL_DATA, bytes(cmd_payload))
+        stream.stream_write_msg(mux, shell_s, stream.SHELL_DATA, utils.bytes(cmd_payload))
         
         # Read response
         thread.sleep(0.5)
@@ -227,7 +240,7 @@ proc run_client():
         thread.unlock(shell_s["mutex"])
         
         print "Client: Reading SHELL responses (queue size: " + str(q_len) + ")..."
-        while q_len > 0:
+        for i_chunk in range(q_len):
             let msg = stream.stream_read_msg(shell_s)
             if msg != nil and msg["msg_type"] == stream.SHELL_DATA:
                 let p = to_list(msg["payload"])
@@ -237,9 +250,6 @@ proc run_client():
                 end
                 print "Client: Shell output chunk:\n" + s_out
             end
-            thread.lock(shell_s["mutex"])
-            q_len = len(shell_s["queue"]) - shell_s["queue_head"]
-            thread.unlock(shell_s["mutex"])
         end
         
         stream.stream_close(mux, shell_s)
@@ -250,8 +260,8 @@ proc run_client():
     
     # Shut down mux
     mux["running"] = false
-    thread.sleep(0.2)
     tcp.close(sock)
+    thread.sleep(0.2)
     print "Client: Stopped."
 
 # Execute based on ROLE environment variable or spawn threads as fallback

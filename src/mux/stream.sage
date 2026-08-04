@@ -306,7 +306,10 @@ proc mux_reader_loop(mux):
                 thread.unlock(mux["streams_mutex"])
                 
                 if mux["incoming_callback"] != nil:
-                    mux["incoming_callback"](mux, new_s)
+                    proc run_cb():
+                        mux["incoming_callback"](mux, new_s)
+                    end
+                    thread.spawn(run_cb)
                 end
             end
         end

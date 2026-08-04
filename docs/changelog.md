@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.3.1 (2026-08-04)
+
+### Interpreter & Native FFI Fixes
+- **Binary Sockets & Byte Stream Truncation** (`SageLang core net.c`):
+  - Updated `tcp_send_native` and `tcp_sendall_native` to natively support `VAL_BYTES` (tag 19) without C-string null-byte truncation.
+  - Updated `tcp_recv_native` and `tcp_recvall_native` to return `VAL_BYTES` objects created via `val_bytes()`, preserving binary `0x00` bytes.
+- **Bytes Type Reflection & Builtins** (`SageLang core interpreter.c`):
+  - Added `case VAL_BYTES: return val_string("bytes");` in `type_native` so `type(b)` evaluates to `"bytes"`.
+  - Added `VAL_BYTES` support to `EXPR_SLICE` and `bytes_new_native` builtin.
+- **Command Execution Character Safety** (`SageLang core stdlib.c`):
+  - Added space (`' '`) allowance to `is_safe_command` so shell commands containing parameters/flags (e.g. `uname -a`, `ls -la`) execute properly without triggering security error rejections.
+
+### Protocol Suite & Build System Fixes
+- **SageLink Native Bytes Utility** (`src/utils.sage`):
+  - Updated `proc bytes(data)` to return native `bytes_new(arr)` constructor output.
+  - Updated `to_list` and `to_byte_list` helper functions to handle null characters without emitting `nil`.
+- **Multiplexer Non-blocking Dispatch** (`src/mux/stream.sage`):
+  - Wrapped `incoming_callback` invocation in `thread.spawn` within `mux_reader_loop` so incoming stream handlers run asynchronously without blocking reader execution off TCP sockets.
+- **Integration Test Concurrency & Pipe Teardown** (`Testing/test_integration.sage`, `sagemake`):
+  - Added non-blocking retry handling (`sock < 0`) in server accept loop.
+  - Updated `sagemake` to avoid stdout pipe deadlocks when capturing test runner outputs.
+  - Verified full test suite (`Crypto Primitives`, `Noise_IK Handshake`, `Integration (CMD/FILE/SHELL)`).
+
 ## v0.3.0 (2026-07-17)
 
 ### Security Fixes (Critical)

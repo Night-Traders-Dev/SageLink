@@ -183,7 +183,7 @@ def cmd_test(args):
     for label, path in tests.items():
         section(label)
         step("Running")
-        res = run(["sage", path])
+        res = run(["sage", path], capture_output=False)
         if res and res.returncode == 0:
             ok("passed")
         else:

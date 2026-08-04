@@ -93,7 +93,7 @@ proc decrypt_frame(key, window, frame_payload_bytes):
 proc read_frame(sock, key, window):
     import tcp
     # Read length prefix (4 bytes) as bytes
-    let len_raw = tcp.recvall(sock, 4, true)
+    let len_raw = tcp.recvall(sock, 4)
     if len_raw == nil or len(len_raw) < 4:
         return nil
     end
@@ -107,7 +107,7 @@ proc read_frame(sock, key, window):
     end
     
     # Read payload bytes
-    let payload_raw = tcp.recvall(sock, len_val, true)
+    let payload_raw = tcp.recvall(sock, len_val)
     if payload_raw == nil or len(payload_raw) < len_val:
         return nil
     end
