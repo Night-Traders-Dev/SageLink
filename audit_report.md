@@ -34,7 +34,7 @@
 
 This comprehensive LinkGuard audit of SageLink identified several vulnerabilities primarily impacting memory management, file permissions, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly, and many critical issues from previous iterations have been resolved.
 
-However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system. The hardcoding of C struct offsets introduces severe cross-platform compatibility issues, notably during `fstat` and `winsize` calculations. Lack of timeouts in the handshake and stream reading also exposes the service to Slowloris-style denial-of-service attacks.
+However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system. The hardcoding of C struct offsets introduces severe cross-platform compatibility issues, notably during `fstat` and `winsize` calculations. Lack of timeouts in the handshake and stream reading also exposes the service to Slowloris-style denial-of-service attacks. The use of O(N^2) list concatenations for parsing hex and generating uuid4 in the cryptography module introduces CPU exhaustion risks.
 
 This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment. All reported issues are firmly grounded in tracing the actual code implementation.
 
@@ -50,13 +50,11 @@ This report provides detailed findings and actionable recommendations to harden 
 8. **[Medium]** DoS via Lack of Network Timeouts
 9. **[Medium]** Unbounded Thread Spawn for Authenticated Clients
 10. **[Medium]** Inconsistent Command Execution Behavior with Unsafe Characters
-11. **[Medium]** OOM / DoS via Stream Queue Message Accumulation
-12. **[Medium]** Linear Probing Overhead in Stream ID Resolution
 
 ## Repository Health Score
 
 - Security: 5/10
-- Performance: 5/10
+- Performance: 4/10
 - Reliability: 4/10
 - Maintainability: 7/10
 - Documentation: 9/10
@@ -115,6 +113,7 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Findings / Evidence:** In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
 - **Fix Recommendation:** Use a unified execution approach.
 
+
 ### 11. OOM / DoS via Stream Queue Message Accumulation
 - **Severity:** Medium
 - **Findings / Evidence:** In `src/mux/stream.sage`, each stream restricts queue depth via `max_queue_size = 1000`. However, the messages are completely unbounded in byte size (up to 1MB each). An attacker can easily store 1GB (1000 * 1MB) of data in memory per stream, leading to OOM.
@@ -130,9 +129,9 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Recommended Fixes:** Implement proper condition variables or blocking channels to completely yield execution until events occur.
 
 ### 2. O(N) Array Operations (List Copying) Overhead
-- **Bottlenecks:** Elements are manually copied using element-wise `push()` iteration across the repository (e.g., `src/transport/framing.sage` encryption buffers, `src/app/file.sage` chunk serialization).
+- **Bottlenecks:** Elements are manually copied using element-wise `push()` iteration across the repository (e.g., `src/transport/framing.sage` encryption buffers, `src/app/file.sage` chunk serialization, and `src/crypto/hash.sage` hex strings via string concatenation inside loops).
 - **Estimated Impact:** Decreased overall throughput limits and dramatically increased overhead when transmitting or serializing multi-megabyte payloads.
-- **Recommended Fixes:** Utilize native slice assignments or built-in memory utilities optimized for contiguous buffer manipulations.
+- **Recommended Fixes:** Utilize native slice assignments or built-in memory utilities optimized for contiguous buffer manipulations. Use arrays and `join()` for string assembly instead of concatenating characters in loops.
 
 ### 3. Linear Probing Overhead in Stream ID Resolution
 - **Bottlenecks:** In `src/mux/stream.sage`, `mux_open_stream` iterates sequentially testing up to 65536 times if a stream ID is available.
