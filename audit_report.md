@@ -34,22 +34,22 @@
 
 This comprehensive LinkGuard audit of SageLink identified several vulnerabilities primarily impacting memory management, file permissions, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly, and many critical issues from previous iterations have been resolved.
 
-However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system. The hardcoding of C struct offsets introduces severe cross-platform compatibility issues, notably during `fstat` and `winsize` calculations. Lack of timeouts in the handshake and stream reading also exposes the service to Slowloris-style denial-of-service attacks. The use of O(N^2) list concatenations for parsing hex and generating uuid4 in the cryptography module introduces CPU exhaustion risks.
+However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system. The hardcoding of C struct offsets introduces severe cross-platform compatibility issues, notably during `fstat` and `winsize` calculations. Lack of timeouts in the handshake and stream reading also exposes the service to Slowloris-style denial-of-service attacks. Incomplete disk cleanup in file transfers creates a disk exhaustion vector.
 
 This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment. All reported issues are firmly grounded in tracing the actual code implementation.
 
 ## Top 10 issues ranked by impact
 
-1. **[Critical] OOM / DoS via Unvalidated Service Type String Concatenation**: In `src/mux/stream.sage`, an incoming `CHAN_OPEN` request processes up to 1MB payloads by concatenating characters in a loop, leading to O(N^2) allocations.
-2. **[Critical] OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers**: In `src/app/file.sage` and `src/app/shell.sage`, memory is blindly allocated up to 1MB based on chunk sizes.
-3. **[High] Shell Process Leak (Orphan/Zombie) due to `system('/bin/sh')`**: The `system()` call spawns an intermediate shell, causing process/resource leaks on the host when killed.
-4. **[High] OOB Memory Read in PTY Name Resolution**: Ignoring `ptsname_r` return code leads to a crash when iterating over uninitialized `name_buf`.
-5. **[High] Double Execution of Commands**: In CMD service, `handle_cmd_stream` executes commands twice via `system()` and `sys.shell_exec`.
-6. **[High] Insecure Default Permissions (TOCTOU) for Identity Keys**: The private key is temporarily written with default permissions before changing it to `0600`.
-7. **[High] Cross-Platform Breakage via Hardcoded Struct Offsets**: `mem_read(stat_buf, 48, "u64")` assumes `st_size` offset is 48, breaking compatibility.
-8. **[Medium] Unbounded Thread Spawn for Authenticated Clients**: Streams spawn unbounded threads (e.g. `thread.spawn(run_cmd)`).
-9. **[Medium] DoS via Lack of Network Timeouts**: Using indefinite network wait (`tcp.recvall` indefinitely) allows for Slowloris-style attacks.
-10. **[Medium] Inconsistent Command Execution Behavior with Unsafe Characters**: Different execution behaviors between `sys.shell_exec` and libc `system()`.
+1. **[Critical] OOM / DoS via Unvalidated Service Type String Concatenation**: In `src/mux/stream.sage`, an incoming `CHAN_OPEN` request processes up to 1MB payloads by concatenating characters in a loop, leading to O(N^2) memory allocations.
+2. **[Critical] OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers**: In `src/app/file.sage` and `src/app/shell.sage`, memory is blindly allocated up to 1MB based on incoming frame sizes, leading to heap exhaustion.
+3. **[High] Shell Process Leak (Orphan/Zombie) due to `system('/bin/sh')`**: In `src/app/shell.sage`, `system()` forks a new shell process instead of `exec`, leaving orphaned processes on the host when killed.
+4. **[High] OOB Memory Read in PTY Name Resolution**: In `src/app/shell.sage`, ignoring the `ptsname_r` return code leads to an out-of-bounds memory read when iterating over the uninitialized `name_buf`.
+5. **[High] Double Execution of Commands**: In `src/app/cmd.sage`, `handle_cmd_stream` executes remote commands twice via both libc `system()` and `sys.shell_exec()`.
+6. **[High] Insecure Default Permissions (TOCTOU) for Identity Keys**: In `src/cli/sagelink.sage`, the private key is temporarily written with default permissions before `chmod 0600`, enabling a race condition.
+7. **[High] Cross-Platform Breakage via Hardcoded Struct Offsets**: In `src/app/file.sage`, `mem_read(stat_buf, 48, "u64")` incorrectly hardcodes the `st_size` struct offset for Linux x86_64 only.
+8. **[Medium] Unbounded Thread Spawn for Authenticated Clients**: In `src/cli/sagelink.sage`, incoming streams immediately trigger unbounded thread creation (e.g. `thread.spawn(run_cmd)`), enabling DoS.
+9. **[Medium] DoS via Lack of Network Timeouts**: In `src/cli/sagelink.sage` and `src/transport/framing.sage`, indefinite blocking on network read (`tcp.recvall`) exposes the service to Slowloris-style attacks.
+10. **[Medium] Disk Space Exhaustion on Failed File Transfers**: In `src/app/file.sage`, failed or partial chunk writes do not consistently clean up the target file on all failure paths.
 
 ## Repository Health Score
 
@@ -66,7 +66,7 @@ This report provides detailed findings and actionable recommendations to harden 
 ### 1. OOM / DoS via Unvalidated Service Type String Concatenation
 - **Findings**: In `src/mux/stream.sage` within `mux_reader_loop`, an incoming `CHAN_OPEN` request reads `payload_bytes` up to the transport frame size (1MB). It then iteratively builds a string via `service_type = service_type + chr(payload_bytes[i])`. In SageLang, concatenating a 1MB string character-by-character can cause O(N^2) allocations, leading to extreme memory and CPU exhaustion.
 - **Severity**: Critical
-- **Evidence**: `src/mux/stream.sage` line ~120 - `for i in range(len(payload_bytes)): service_type = service_type + chr(payload_bytes[i])`
+- **Evidence**: `src/mux/stream.sage` - `for i in range(len(payload_bytes)): service_type = service_type + chr(payload_bytes[i])`
 - **Fix recommendation**: Validate that the `len(payload_bytes)` is within expected bounds (e.g., less than 32 bytes) before iterating.
 
 ### 2. OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers
@@ -91,12 +91,12 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Findings**: In `src/app/cmd.sage`, `handle_cmd_stream` executes the command string twice. First, it runs `ffi_run_command(cmd)` to capture the exit code via `system()`. Then, it runs `sys.shell_exec(cmd)` to capture the standard output. This leads to unintended side-effects on the host system, executing mutating commands twice.
 - **Severity**: High
 - **Evidence**: `src/app/cmd.sage` - calls both `ffi_run_command(cmd)` and `sys.shell_exec(cmd)`.
-- **Fix recommendation**: Use a unified approach (e.g., pipe/popen) to capture both the output and the exit code from a single execution instance.
+- **Fix recommendation**: Use a unified approach (e.g., popen wrapper) to capture both the output and the exit code from a single execution instance.
 
 ### 6. Insecure Default Permissions (TOCTOU) for Identity Keys
-- **Findings**: In `src/cli/sagelink.sage`, `io.writefile(tmp_key, priv_b64 + "\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key.
+- **Findings**: In `src/cli/sagelink.sage`, `io.writefile(tmp_key, priv_b64 + "\\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key.
 - **Severity**: High
-- **Evidence**: `src/cli/sagelink.sage` - `io.writefile(tmp_key, priv_b64 + "\n")` followed by `sys.shell_exec("chmod 600 ...")`.
+- **Evidence**: `src/cli/sagelink.sage` - `io.writefile(tmp_key, priv_b64 + "\\n")` followed by `sys.shell_exec("chmod 600 ...")`.
 - **Fix recommendation**: Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
 
 ### 7. Cross-Platform Breakage via Hardcoded Struct Offsets
@@ -112,22 +112,16 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Fix recommendation**: Implement a maximum limit on concurrent open streams per authenticated connection.
 
 ### 9. DoS via Lack of Network Timeouts
-- **Findings**: In `src/cli/sagelink.sage` and `src/mux/stream.sage`, network operations such as `tcp.recvall` wait indefinitely. This allows an attacker to open connections and hold them open without sending data, exhausting the connection pool and worker threads (Slowloris attack).
+- **Findings**: In `src/cli/sagelink.sage` and `src/transport/framing.sage`, network operations such as `tcp.recvall` wait indefinitely. This allows an attacker to open connections and hold them open without sending data, exhausting the connection pool and worker threads (Slowloris attack).
 - **Severity**: Medium
-- **Evidence**: Use of `tcp.recvall(..., true)` without timeouts in multiple places.
+- **Evidence**: Use of `tcp.recvall(..., 4)` and `tcp.recvall(..., len_val)` without timeouts in multiple places.
 - **Fix recommendation**: Implement read and write timeouts on the TCP sockets to disconnect idle or slow peers.
 
-### 10. Inconsistent Command Execution Behavior with Unsafe Characters
-- **Findings**: In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
+### 10. Disk Space Exhaustion on Failed File Transfers
+- **Findings**: In `src/app/file.sage`, if a chunk transfer fails (e.g., `chunk_msg == nil`), the reader breaks the loop, closes the file, and then conditionally wipes the target file only if `bytes_written >= file_size`. This leaves partial files on disk if the stream disconnects unexpectedly, exhausting disk space over time.
 - **Severity**: Medium
-- **Evidence**: `src/app/cmd.sage` - using both `sys.shell_exec()` and `ffi_call(libc, "system", ...)`.
-- **Fix recommendation**: Use a unified execution approach.
-
-### 11. OOM / DoS via Stream Queue Message Accumulation
-- **Findings**: In `src/mux/stream.sage`, each stream restricts queue depth via `max_queue_size = 1000`. However, the messages are completely unbounded in byte size (up to 1MB each). An attacker can easily store 1GB (1000 * 1MB) of data in memory per stream, leading to OOM.
-- **Severity**: Medium
-- **Evidence**: `src/mux/stream.sage` limits by queue element count rather than memory footprint.
-- **Fix recommendation**: Implement backpressure or rate limiting based on total bytes in the queue, not just the raw message count.
+- **Evidence**: `src/app/file.sage` - `if bytes_written >= file_size` validation occurs after the loop breaks.
+- **Fix recommendation**: Explicitly wipe the incomplete file if the loop terminates before `bytes_written == file_size`.
 
 ---
 
@@ -139,9 +133,9 @@ This report provides detailed findings and actionable recommendations to harden 
 - **Recommended fixes**: Implement proper condition variables or blocking channels to completely yield execution until events occur.
 
 ### 2. O(N) Array Operations (List Copying) Overhead
-- **Bottlenecks**: Elements are manually copied using element-wise `push()` iteration across the repository (e.g., `src/transport/framing.sage` encryption buffers, `src/app/file.sage` chunk serialization, and `src/crypto/hash.sage` hex strings via string concatenation inside loops).
+- **Bottlenecks**: Elements are manually copied using element-wise `push()` iteration across the repository (e.g., `src/transport/framing.sage` encryption buffers, `src/app/file.sage` chunk serialization, and service type assembly inside loops).
 - **Estimated impact**: Decreased overall throughput limits and dramatically increased overhead when transmitting or serializing multi-megabyte payloads.
-- **Recommended fixes**: Utilize native slice assignments or built-in memory utilities optimized for contiguous buffer manipulations. Use arrays and `join()` for string assembly instead of concatenating characters in loops.
+- **Recommended fixes**: Utilize native slice assignments or built-in memory utilities optimized for contiguous buffer manipulations.
 
 ### 3. Linear Probing Overhead in Stream ID Resolution
 - **Bottlenecks**: In `src/mux/stream.sage`, `mux_open_stream` iterates sequentially testing up to 65536 times if a stream ID is available.
