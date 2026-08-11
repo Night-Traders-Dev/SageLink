@@ -1,168 +1,169 @@
-# SageLink Audit Report
+# SageLink Comprehensive Audit Report
 
 ## Architecture Map
 
+**Major Subsystems:**
+- CMD Service (`src/app/cmd.sage`)
+- FILE Service (`src/app/file.sage`)
+- SHELL Service (`src/app/shell.sage`)
+- Stream Multiplexing (`src/mux/stream.sage`)
+- Transport Encryption (`src/transport/framing.sage`, `replay_window.sage`)
+- Handshake (`src/handshake/noise_ik.sage`)
+- Command Line Interface (`src/cli/sagelink.sage`)
+
+**Runtime Architecture:**
 ```text
 ┌─────────────────────────────────────────┐
-│  Application Layer                       │  CMD / FILE / SHELL
+│  Application Layer (CMD / FILE / SHELL) │
 ├─────────────────────────────────────────┤
-│  Multiplexing Layer                      │  stream_id, flow control
+│  Multiplexing Layer                     │
 ├─────────────────────────────────────────┤
-│  Transport Encryption                    │  ChaCha20-Poly1305
+│  Transport Encryption Layer             │
 ├─────────────────────────────────────────┤
-│  Handshake (Noise_IK)                    │  X25519, BLAKE2s, HKDF
+│  Handshake Layer (Noise_IK)             │
 ├─────────────────────────────────────────┤
-│  TCP                                     │  length-prefixed frames
+│  TCP Socket Layer                       │
 └─────────────────────────────────────────┘
 ```
 
-- **Major Subsystems**:
-  - `src/handshake/` (Noise_IK handshake state machine)
-  - `src/transport/` (Wire framing & replay protection)
-  - `src/mux/` (Stream multiplexing)
-  - `src/app/` (Application services: CMD, FILE, SHELL)
-  - `src/cli/` (CLI entry point)
-- **External Dependencies**:
-  - Requires `SageLang >= 4.0.2`
-  - Zero FFI for cryptography; uses FFI in `app/shell.sage` (`libc`), `app/file.sage` and `app/cmd.sage`.
-- **Build System**:
-  - `sagemake` Python script wrapping SageLang compiler/interpreter.
-- **Testing Infrastructure**:
-  - Shell-based `sagemake test` integrating `.sage` test files inside `Testing/`.
+**External Dependencies:**
+- `sagelang-lib-crypto` (loaded as `crypto` submodule)
+- `libc` (loaded via FFI for PTY and process operations)
+- No external FFI dependency for cryptographic operations (hand-rolled)
+
+**Build Systems:**
+- Custom unified orchestrator `sagemake` (`python3 sagemake check|test|cross-build`)
+
+**Testing Infrastructure:**
+- Custom SageLang test scripts in `Testing/` (e.g., `test_crypto.sage`, `test_handshake.sage`, `test_integration.sage`)
 
 ## Executive Summary
 
-This comprehensive LinkGuard audit of SageLink identified several vulnerabilities primarily impacting memory management, file permissions, cross-platform compatibility, and CPU performance. The core cryptography layer implements Noise_IK and ChaCha20-Poly1305 correctly, and many critical issues from previous iterations have been resolved.
+SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice, and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment.
 
-However, the current implementation suffers from significant resource exhaustion vectors. Specifically, unbounded string concatenation of unvalidated payloads and uncontrolled thread spawning for authenticated streams expose the system to severe Denial of Service (DoS) risks. Furthermore, process leaks in the shell service and double execution in the CMD service lead to resource exhaustion and unintended side-effects on the host system. The hardcoding of C struct offsets introduces severe cross-platform compatibility issues, notably during `fstat` and `winsize` calculations. Lack of timeouts in the handshake and stream reading also exposes the service to Slowloris-style denial-of-service attacks.
+## Top 10 Issues Ranked By Impact
 
-This report provides detailed findings and actionable recommendations to harden SageLink prior to production deployment. All reported issues are firmly grounded in tracing the actual code implementation.
-
-## Top 10 issues ranked by impact
-
-1. **[Critical] OOM / DoS via Unvalidated Service Type String Concatenation**: In `src/mux/stream.sage`, an incoming `CHAN_OPEN` request processes up to 1MB payloads by concatenating characters in a loop, leading to O(N^2) allocations.
-2. **[Critical] OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers**: In `src/app/file.sage` and `src/app/shell.sage`, memory is blindly allocated up to 1MB based on chunk sizes.
-3. **[High] Shell Process Leak (Orphan/Zombie) due to `system('/bin/sh')`**: The `system()` call spawns an intermediate shell, causing process/resource leaks on the host when killed.
-4. **[High] OOB Memory Read in PTY Name Resolution**: Ignoring `ptsname_r` return code leads to a crash when iterating over uninitialized `name_buf`.
-5. **[High] Double Execution of Commands**: In CMD service, `handle_cmd_stream` executes commands twice via `system()` and `sys.shell_exec`.
-6. **[High] Insecure Default Permissions (TOCTOU) for Identity Keys**: The private key is temporarily written with default permissions before changing it to `0600`.
-7. **[High] Cross-Platform Breakage via Hardcoded Struct Offsets**: `mem_read(stat_buf, 48, "u64")` assumes `st_size` offset is 48, breaking compatibility.
-8. **[Medium] Unbounded Thread Spawn for Authenticated Clients**: Streams spawn unbounded threads (e.g. `thread.spawn(run_cmd)`).
-9. **[Medium] DoS via Lack of Network Timeouts**: Using indefinite network wait (`tcp.recvall` indefinitely) allows for Slowloris-style attacks.
-10. **[Medium] OOM / DoS via Stream Queue Message Accumulation**: Stream messages are unbounded in byte size, storing up to 1GB per stream in memory.
+1. **Unintended Double-Execution of Commands**: `app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
+2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
+3. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
+4. **Hardcoded C Struct Offsets**: `app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
+5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
+6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake and stream readers lack timeouts, making the service vulnerable to connection stagnation.
+7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in CLI) lack secure atomic permission management.
+8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2`) block the multiplexer's main reader loop, reducing overall stream concurrency.
+9. **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
+10. **O(N^2) Array Operations**: Frequent list copying and string concatenations in byte manipulations (e.g., `transport/framing.sage` and `utils.sage`) incur heavy algorithmic overhead.
 
 ## Repository Health Score
 
-- Security: 5/10
-- Performance: 4/10
-- Reliability: 4/10
+- Security: 6/10
+- Performance: 5/10
+- Reliability: 5/10
 - Maintainability: 7/10
-- Documentation: 9/10
-
----
+- Documentation: 8/10
 
 ## Security Report
 
-### 1. OOM / DoS via Unvalidated Service Type String Concatenation
-- **Findings**: In `src/mux/stream.sage` within `mux_reader_loop`, an incoming `CHAN_OPEN` request reads `payload_bytes` up to the transport frame size (1MB). It then iteratively builds a string via `service_type = service_type + chr(payload_bytes[i])`. Concatenating a 1MB string character-by-character can cause O(N^2) allocations, leading to extreme memory and CPU exhaustion.
-- **Severity**: Critical
-- **Evidence**: `src/mux/stream.sage` line ~260 - `for i in range(len(payload_bytes)): service_type = service_type + chr(payload_bytes[i])`
-- **Fix recommendation**: Validate that the `len(payload_bytes)` is within expected bounds (e.g., less than 32 bytes) before iterating.
-
-### 2. OOM / DoS via Unbounded Memory Allocation in File/Shell Transfers
-- **Findings**: In `src/app/file.sage` (`handle_file_stream`) and `src/app/shell.sage` (`handle_shell_stream`), `mem_alloc(len(chunk_data))` and `mem_alloc(count)` are called based on the size of the incoming payload, up to 1MB. This can exhaust heap memory rapidly if multiple streams receive large frames simultaneously.
-- **Severity**: Critical
-- **Evidence**: `src/app/file.sage` line ~292 (`let write_buf = mem_alloc(len(chunk_data))`) and `src/app/shell.sage` line ~156 (`let write_buf = mem_alloc(count)`).
-- **Fix recommendation**: Limit chunk size bounds strictly or process writes in fixed-size internal buffers rather than allocating memory matching the incoming network frame.
-
-### 3. Shell Process Leak (Orphan/Zombie) due to `system('/bin/sh')`
-- **Findings**: In `src/app/shell.sage`, the child process executing the shell uses `ffi_call(libc, "system", "int", ["/bin/sh"])` instead of `exec`. Because `system()` forks a new process to run the shell, when the parent later cleans up the session using `ffi_call(libc, "kill", "int", [pid, 9])`, it only kills the intermediate child process. The actual `/bin/sh` process is orphaned and left running, causing a severe process/resource leak on the host system.
+**Finding 1: Unhandled FFI return values**
 - **Severity**: High
-- **Evidence**: `src/app/shell.sage` line ~128 - `ffi_call(libc, "system", "int", ["/bin/sh"])`
-- **Fix recommendation**: Replace the `system()` call with an `exec` family function (e.g., `execl("/bin/sh", "sh", NULL)`) so the shell replaces the child process, allowing the parent's `kill` signal to correctly terminate the shell.
+- **Evidence**: `app/shell.sage` (line ~104) calls `ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])` but does not check the return value. It then immediately loops `while true` reading `name_buf` until a null byte is found:
+  ```
+  ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])
+  let slave_name = ""
+  let idx = 0
+  while true:
+      let char_val = mem_read(name_buf, idx, "byte")
+      ...
+  ```
+  This can lead to out-of-bounds reads if `ptsname_r` fails.
+- **Fix Recommendation**: Always check the return values of FFI calls, specifically `ptsname_r` and `posix_openpt`.
 
-### 4. OOB Memory Read in PTY Name Resolution
-- **Findings**: In `src/app/shell.sage`, the return value of `ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])` is ignored. If `ptsname_r` fails, the `name_buf` is uninitialized, but the subsequent `while true` loop unconditionally iterates using `mem_read` until it finds a null byte. This can lead to an out-of-bounds (OOB) memory read and a crash.
+**Finding 2: DoS vulnerabilities (Memory/Network)**
 - **Severity**: High
-- **Evidence**: `src/app/shell.sage` line ~94 - return value of `ptsname_r` is not checked before iterating over `name_buf`.
-- **Fix recommendation**: Check the return value of `ptsname_r` before iterating over `name_buf`. If it returns a non-zero error code, handle the failure appropriately and close the stream.
+- **Evidence**: `transport/framing.sage` (line ~81) sets a maximum frame size of 1MB: `if len_val > 1048576: # 1MB limit`. Before authentication is completed, an attacker can spam large payloads. Additionally, `tcp.recvall()` in `noise_ik` and `framing` blocks indefinitely without a timeout.
+- **Fix Recommendation**: Implement global read timeouts for `tcp.recvall` during the handshake and limit pre-authentication payload sizes.
 
-### 5. Double Execution of Commands
-- **Findings**: In `src/app/cmd.sage`, `handle_cmd_stream` executes the command string twice. First, it runs `ffi_run_command(cmd)` to capture the exit code via `system()`. Then, it runs `sys.shell_exec(cmd)` to capture the standard output. This leads to unintended side-effects on the host system, executing mutating commands twice.
+**Finding 3: Process and resource leaks**
 - **Severity**: High
-- **Evidence**: `src/app/cmd.sage` lines ~82-85 - calls both `ffi_run_command(cmd)` and `sys.shell_exec(cmd)`.
-- **Fix recommendation**: Use a unified approach (e.g., pipe/popen) to capture both the output and the exit code from a single execution instance.
+- **Evidence**: `app/shell.sage` (line ~146) spawns the interactive shell via: `ffi_call(libc, "system", "int", ["/bin/sh"])`. The `system()` call spawns a sub-shell which then executes `/bin/sh`. The parent's `kill(pid, 9)` only kills the intermediate shell, leaving the actual `/bin/sh` orphaned.
+- **Fix Recommendation**: Replace the `system()` call in the SHELL service with `execve` (or equivalent) so that the child process image is replaced and the PID exactly matches the interactive shell.
 
-### 6. Insecure Default Permissions (TOCTOU) for Identity Keys
-- **Findings**: In `src/cli/sagelink.sage`, `io.writefile(tmp_key, priv_b64 + "\n")` writes the private key with default system permissions, followed by a `sys.shell_exec("chmod 600 " + tmp_key + " && mv ...")`. This creates a Time-of-Check to Time-of-Use (TOCTOU) race condition where a local attacker can read the private key.
-- **Severity**: High
-- **Evidence**: `src/cli/sagelink.sage` - `io.writefile(tmp_key, priv_b64 + "\n")` followed by `sys.shell_exec("chmod 600 ...")`.
-- **Fix recommendation**: Ensure the file is created with 0600 permissions atomically using standard system calls (`umask` or `open` with explicit mode flags) before any sensitive data is written.
-
-### 7. Cross-Platform Breakage via Hardcoded Struct Offsets
-- **Findings**: In `src/app/file.sage`, `mem_read(stat_buf, 48, "u64")` assumes `st_size` is at offset 48, which is only valid on Linux x86_64, causing incorrect file size readings on other platforms (e.g., macOS or ARM64). Similarly, in `src/app/shell.sage`, the `winsize` struct manipulation relies on a hardcoded 8-byte format.
-- **Severity**: High
-- **Evidence**: `src/app/file.sage` line ~62 - `mem_read(stat_buf, 48, "u64")`. `src/app/shell.sage` line ~169 - hardcoded 8-byte format.
-- **Fix recommendation**: Use cross-platform libraries or calculate offsets dynamically using C headers.
-
-### 8. Unbounded Thread Spawn for Authenticated Clients
-- **Findings**: In `src/cli/sagelink.sage`, the `server_stream_dispatcher` spawns threads without limits for authenticated peers (`thread.spawn(run_cmd)`, `thread.spawn(run_file)`, `thread.spawn(run_shell)`). An authenticated peer could maliciously open thousands of concurrent streams, causing resource exhaustion.
+**Finding 4: TOCTOU Weaknesses**
 - **Severity**: Medium
-- **Evidence**: `src/cli/sagelink.sage` - unconditional `thread.spawn` for each incoming connection type.
-- **Fix recommendation**: Implement a maximum limit on concurrent open streams per authenticated connection.
+- **Evidence**: The CLI tool (`cli/sagelink.sage`) creates sensitive files without atomically setting restrictive file permissions (e.g., `0600`) at the moment of creation.
+- **Fix Recommendation**: Utilize secure file permission flags during `open` (e.g., `O_CREAT | O_EXCL` with mode `0600`).
 
-### 9. DoS via Lack of Network Timeouts
-- **Findings**: In `src/cli/sagelink.sage` and `src/mux/stream.sage`, network operations such as `tcp.recvall` wait indefinitely. This allows an attacker to open connections and hold them open without sending data, exhausting the connection pool and worker threads (Slowloris attack).
+**Finding 5: Unauthenticated Network Data Processing**
 - **Severity**: Medium
-- **Evidence**: Use of `tcp.recvall(..., true)` without timeouts in multiple places.
-- **Fix recommendation**: Implement read and write timeouts on the TCP sockets to disconnect idle or slow peers.
+- **Evidence**: `mux_reader_loop` in `src/mux/stream.sage` processes unauthenticated frames (e.g. `CHAN_OPEN` length reading logic) without bounded restrictions on the service string loop length.
+- **Fix Recommendation**: Apply strict bounds checking on `len(payload_bytes)` before reading service strings.
 
-### 10. OOM / DoS via Stream Queue Message Accumulation
-- **Findings**: In `src/mux/stream.sage`, each stream restricts queue depth via `max_queue_size = 1000`. However, the messages are completely unbounded in byte size (up to 1MB each). An attacker can easily store 1GB (1000 * 1MB) of data in memory per stream, leading to OOM.
-- **Severity**: Medium
-- **Evidence**: `src/mux/stream.sage` line ~166 - limits by queue element count rather than memory footprint.
-- **Fix recommendation**: Implement backpressure or rate limiting based on total bytes in the queue, not just the raw message count.
+**Finding 6: Hardcoded IOCTLs Crossing OS Boundaries**
+- **Severity**: Low
+- **Evidence**: `get_ioctl_ctty` and `get_ioctl_winsz` in `app/shell.sage` rely on OS uname but are brittle to kernel version changes or differing architectures.
+- **Fix Recommendation**: Expose IOCTLs properly through a platform-specific C binding or FFI header extraction script.
 
----
+**Finding 7: File Clean-Up Failures**
+- **Severity**: Low
+- **Evidence**: In `app/file.sage`, on stream close during partial transfer, the target file is not always deleted if `bytes_written < file_size` and the connection drops.
+- **Fix Recommendation**: Implement an `on_close` hook or structured error handling to delete partial downloads.
+
+**Finding 8: Unbounded Thread Spawning**
+- **Severity**: High
+- **Evidence**: `sagelink/cli/sagelink.sage` spawns a thread (`thread.spawn(handle_client)`) unconditionally for every accepted socket before handshake.
+- **Fix Recommendation**: Introduce a thread pool or global connection limit.
+
+**Finding 9: Predictable Randomness Check**
+- **Severity**: Low
+- **Evidence**: No verification that `/dev/urandom` successfully returns high-entropy data inside `rand.sage` (relies completely on underlying OS without fallback).
+- **Fix Recommendation**: Check `/dev/urandom` return codes thoroughly.
+
+**Finding 10: Incomplete Submodule Init Security**
+- **Severity**: Informational
+- **Evidence**: Relying on external cloned submodules introduces a supply chain surface area if not pinned to specific hashes.
+- **Fix Recommendation**: Document submodule hashes in build steps.
 
 ## Performance Report
 
-### 1. Polling Loop CPU Overhead
-- **Bottlenecks**: Tight polling loops utilizing `while true: ... thread.sleep(0.005)` exist in `src/mux/stream.sage` (e.g., `stream_read_msg` and verifying `rekeying` locks).
-- **Estimated impact**: High idle CPU utilization, especially on embedded environments like the OrangePi RV2, resulting in power drain and poor responsiveness.
-- **Recommended fixes**: Implement proper condition variables or blocking channels to completely yield execution until events occur.
+**Bottlenecks:**
+1. **O(N^2) Array Operations:** Iteratively pushing to arrays or concatenating strings in `utils.bytes`, `utils.to_list`, and `framing.sage`.
+2. **Synchronous DH Computations:** `x25519` key exchanges run synchronously within the `mux_reader_loop`, blocking all other stream processing.
+3. **Busy Polling:** `stream_read_msg` uses `while true` loops with `thread.sleep(0.005)` to wait for queue messages.
+4. **Delayed Garbage Collection/Compaction:** Stream queues only compact when `queue_head >= 1024`, holding onto memory longer than necessary.
 
-### 2. O(N) Array Operations (List Copying) Overhead
-- **Bottlenecks**: Elements are manually copied using element-wise `push()` iteration across the repository (e.g., `src/transport/framing.sage` encryption buffers, `src/app/file.sage` chunk serialization, and `src/crypto/hash.sage` hex strings via string concatenation inside loops).
-- **Estimated impact**: Decreased overall throughput limits and dramatically increased overhead when transmitting or serializing multi-megabyte payloads.
-- **Recommended fixes**: Utilize native slice assignments or built-in memory utilities optimized for contiguous buffer manipulations. Use arrays and `join()` for string assembly instead of concatenating characters in loops.
+**Estimated Impact:**
+- Excessive memory copying and garbage collection pauses during large file transfers.
+- Severe concurrency drops when rekeying or authenticating multiple peers simultaneously.
+- High idle CPU utilization (especially critical on embedded target hardware).
 
-### 3. Linear Probing Overhead in Stream ID Resolution
-- **Bottlenecks**: In `src/mux/stream.sage`, `mux_open_stream` iterates sequentially testing up to 65536 times if a stream ID is available.
-- **Estimated impact**: Noticeable delay when establishing streams under moderate concurrency.
-- **Recommended fixes**: Maintain an independent free-list array or optimized random allocation scheme to avoid linear traversal.
-
-### 4. Synchronous DH Computations
-- **Bottlenecks**: In `src/mux/stream.sage` (`handle_rekey_responder`), the DH computation (`noise_ik.initialize_handshake`) blocks the entire reader thread while executing.
-- **Estimated impact**: Stalls all concurrent streams for the duration of the DH computation.
-- **Recommended fixes**: Dispatch rekeying handshakes to a background worker thread.
-
----
+**Recommended Fixes:**
+- Preallocate arrays based on known sizes and use memory slicing/views instead of iterative pushing.
+- Offload Diffie-Hellman handshake logic to asynchronous worker threads.
+- Implement condition variables or blocking I/O signaling instead of sleep-based polling.
+- Implement circular buffers for stream queues to avoid manual array compaction.
 
 ## Functionality Report
 
-### Working features
-- Mutual Authentication via Noise_IK with X25519 and ChaCha20-Poly1305.
-- CMD execution with remote shell spawning and output capture.
-- Replay Protection via a 64-entry sliding bitmap in the transport layer.
-- Multiplexed Streams supporting overlapping operations on a single TCP socket.
-- FILE transfers with streaming memory buffers.
+**Working Features:**
+- Hand-rolled ChaCha20-Poly1305, BLAKE2s, X25519 primitives correctly adhere to RFC tests (verified via `Testing/test_crypto.sage`).
+- Single-round trip Noise_IK mutual authentication.
+- Sliding 64-entry bitmap replay protection works accurately.
 
-### Broken features
-- Inconsistent Execution Models in CMD Service: In `src/app/cmd.sage`, `sys.shell_exec(cmd)` restricts unsafe characters (e.g., `&&`), while `ffi_run_command(cmd)` executes them via libc `system()`. If a command contains restricted characters, it succeeds in `ffi_run_command` but throws an error in `sys.shell_exec`, leading to inconsistent state and missing standard output.
-- Cross-Platform Breakage via Hardcoded Struct Offsets: In `src/app/file.sage`, `mem_read(stat_buf, 48, "u64")` assumes `st_size` is at offset 48, which is only valid on Linux x86_64, causing incorrect file size readings on other platforms (e.g., macOS or ARM64). Similarly, in `src/app/shell.sage`, the `winsize` struct manipulation relies on a hardcoded 8-byte format.
+**Broken Features:**
+- **CMD Service**: Remote commands execute twice. In `app/cmd.sage` (lines 53-56):
+  ```
+  let result = ffi_run_command(cmd)
+  let output = sys.shell_exec(cmd)
+  ```
+  `ffi_run_command(cmd)` executes the command to capture the exit code via `system()`, and immediately after, `sys.shell_exec(cmd)` executes the same command again to capture standard output. This causes side-effects (e.g., `mkdir`, `rm`) to run twice.
+- **SHELL Service**: Resizing logic in `app/shell.sage` manually populates a `winsize` struct by hardcoding 8 bytes:
+  ```
+  let ws = mem_alloc(8)
+  mem_write(ws, 0, "byte", rows & 255)
+  ...
+  ```
+  This breaks cross-platform compatibility because struct layouts and padding vary between architectures.
 
-### Missing coverage
-- Missing tests validating that maliciously oversized file chunks correctly trigger validation failures.
-- Missing integration tests for the fallback of the `rekeying` logic under high load.
-- No unit tests validating the failure paths of FFI system calls (e.g., `posix_openpt` returning < 0).
+**Missing Coverage:**
+- PTY file descriptor leaks: Error handling on mid-setup PTY operations in `handle_shell_stream` is incomplete; if an intermediate step fails, file descriptors might leak before cleanup occurs.
+- Network timeouts are entirely missing from integration tests.
