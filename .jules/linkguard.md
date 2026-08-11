@@ -36,3 +36,4 @@
 ## Build system pitfalls
 - `sagemake` acts as a unified orchestrator but global test commands (`sagemake test`) risk timeouts if tests are not explicitly targeted.
 - Submodules (like `sagelang-lib-gc` or `sagelang-lib-crypto`) require precise initialization to avoid missing dependencies during cross-compilation.
+- Test suites can fail globally due to simple syntax errors (e.g., empty `rotate_left` proc in `crypto/hash.sage`) or unsupported FFI argument types masking expected failures (e.g., `open` call with `["/dev/urandom", 0]` inside `crypto/rand.sage`).
