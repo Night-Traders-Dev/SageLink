@@ -10,7 +10,7 @@
 - Process/Resource Leaks: Using `system()` instead of `exec` to spawn long-running child processes causes the parent to lose direct tracking of the actual application (e.g., shell), leading to orphaned processes and resource leaks when the parent attempts to clean up the intermediate `system()` shell process.
 - Time-of-Check to Time-of-Use (TOCTOU) file permission vulnerabilities during sensitive file creation (e.g., identity keys).
 - Command execution risks involving double-execution patterns that could lead to unintended remote side-effects.
-- Denial of Service (DoS) risks due to lack of bounding on memory allocations (e.g., reading unvalidated payload sizes up to 1MB or creating unbounded thread instances for authenticated streams).
+- Denial of Service (DoS) risks due to lack of bounding on memory allocations (e.g., reading unvalidated payload sizes up to 1MB or creating unbounded thread instances for authenticated streams). Additionally, O(N^2) string concatenation when parsing `CHAN_OPEN` payloads can lead to CPU exhaustion DoS.
 - Unhandled FFI return values causing out-of-bounds (OOB) memory reads on uninitialized buffers (e.g., ignoring `ptsname_r` errors in PTY resolution).
 - Denial of Service (DoS) via Slowloris-style attacks due to lack of network timeouts during handshake and stream reading.
 - Incomplete disk cleanup on failed file transfers, leading to disk space resource exhaustion.

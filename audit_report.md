@@ -93,10 +93,10 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Evidence**: The CLI tool (`cli/sagelink.sage`) creates sensitive files without atomically setting restrictive file permissions (e.g., `0600`) at the moment of creation.
 - **Fix Recommendation**: Utilize secure file permission flags during `open` (e.g., `O_CREAT | O_EXCL` with mode `0600`).
 
-**Finding 5: Unauthenticated Network Data Processing**
+**Finding 5: Authenticated O(N^2) String Concatenation DoS**
 - **Severity**: Medium
-- **Evidence**: `mux_reader_loop` in `src/mux/stream.sage` processes unauthenticated frames (e.g. `CHAN_OPEN` length reading logic) without bounded restrictions on the service string loop length.
-- **Fix Recommendation**: Apply strict bounds checking on `len(payload_bytes)` before reading service strings.
+- **Evidence**: `mux_reader_loop` in `src/mux/stream.sage` processes `CHAN_OPEN` frames by looping over `payload_bytes` and concatenating characters to `service_type` (e.g., `service_type = service_type + chr(payload_bytes[i])`). While the frame is authenticated, a malicious peer can send an excessively large `CHAN_OPEN` payload (up to 1MB allowed by framing), causing extreme O(N^2) string concatenation overhead, leading to CPU exhaustion.
+- **Fix Recommendation**: Apply strict bounds checking on `len(payload_bytes)` before reading service strings and avoid O(N^2) string building.
 
 **Finding 6: Hardcoded IOCTLs Crossing OS Boundaries**
 - **Severity**: Low
@@ -108,10 +108,10 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Evidence**: In `app/file.sage`, on stream close during partial transfer, the target file is not always deleted if `bytes_written < file_size` and the connection drops.
 - **Fix Recommendation**: Implement an `on_close` hook or structured error handling to delete partial downloads.
 
-**Finding 8: Unbounded Thread Spawning**
+**Finding 8: Unbounded Authenticated Thread Spawning**
 - **Severity**: High
-- **Evidence**: `sagelink/cli/sagelink.sage` spawns a thread (`thread.spawn(handle_client)`) unconditionally for every accepted socket before handshake.
-- **Fix Recommendation**: Introduce a thread pool or global connection limit.
+- **Evidence**: `mux_reader_loop` in `src/mux/stream.sage` spawns a thread (`thread.spawn(run_cb)`) unconditionally for every `CHAN_OPEN` request received from an authenticated peer, without bounding the number of concurrent active streams or threads.
+- **Fix Recommendation**: Introduce a thread pool or global stream/connection limit for authenticated stream dispatches.
 
 **Finding 9: Predictable Randomness Check**
 - **Severity**: Low
