@@ -14,6 +14,7 @@
 - Unhandled FFI return values causing out-of-bounds (OOB) memory reads on uninitialized buffers (e.g., ignoring `ptsname_r` errors in PTY resolution).
 - Denial of Service (DoS) via Slowloris-style attacks due to lack of network timeouts during handshake and stream reading.
 - Incomplete disk cleanup on failed file transfers, leading to disk space resource exhaustion.
+- CLI keygen fails because `sys.shell_exec` strictly restricts unsafe characters like `&&`, which is used when executing `chmod 600 identity.key.tmp.* && mv identity.key.tmp.* identity.key`.
 
 ## Performance bottlenecks
 - O(N^2) or high O(N) Array Operations (List Copying/String Concatenation) overhead, especially noticeable when handling byte arrays in transport framing and serialization, or when generating UUID4s/hex strings inside `crypto/hash.sage` via loops.

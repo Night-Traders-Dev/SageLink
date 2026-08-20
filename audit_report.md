@@ -52,7 +52,7 @@ SageLink has been comprehensively audited for security, performance, reliability
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in CLI) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
-10. **O(N^2) Array Operations**: Frequent list copying and string concatenations in byte manipulations (e.g., `transport/framing.sage` and `utils.sage`) incur heavy algorithmic overhead.
+10. **Keygen Failure via Restricted Execution**: CLI keygen fails because `sys.shell_exec` strictly restricts unsafe characters (like `&&`), breaking the atomic key creation (`chmod 600 ... && mv ...`).
 
 ## Repository Health Score
 
@@ -163,6 +163,11 @@ SageLink has been comprehensively audited for security, performance, reliability
   ...
   ```
   This breaks cross-platform compatibility because struct layouts and padding vary between architectures.
+- **CLI Service**: The `keygen` command fails. In `cli/sagelink.sage` (lines ~532), it executes:
+  ```
+  sys.shell_exec("chmod 600 " + tmp_key + " && mv " + tmp_key + " identity.key")
+  ```
+  This fails completely because `sys.shell_exec` blocks `&&` and other restricted unsafe characters, preventing the identity key from being correctly renamed and applied with the right permissions.
 
 **Missing Coverage:**
 - PTY file descriptor leaks: Error handling on mid-setup PTY operations in `handle_shell_stream` is incomplete; if an intermediate step fails, file descriptors might leak before cleanup occurs.
