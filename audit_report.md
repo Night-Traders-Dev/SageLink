@@ -28,6 +28,7 @@
 
 **External Dependencies:**
 - `sagelang-lib-crypto` (loaded as `crypto` submodule)
+- `sagelang-lib-gc` (loaded as `sagelang-lib-gc` submodule for garbage collection)
 - `libc` (loaded via FFI for PTY and process operations)
 - No external FFI dependency for cryptographic operations (hand-rolled)
 
@@ -39,7 +40,7 @@
 
 ## Executive Summary
 
-SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice, and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment.
+SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice, and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -57,7 +58,7 @@ SageLink has been comprehensively audited for security, performance, reliability
 ## Repository Health Score
 
 - Security: 6/10
-- Performance: 5/10
+- Performance: 6/10
 - Reliability: 5/10
 - Maintainability: 7/10
 - Documentation: 8/10
@@ -75,7 +76,7 @@ SageLink has been comprehensively audited for security, performance, reliability
       let char_val = mem_read(name_buf, idx, "byte")
       ...
   ```
-  This can lead to out-of-bounds reads if `ptsname_r` fails.
+  This can lead to out-of-bounds memory reads on uninitialized buffers if `ptsname_r` fails, potentially leaking sensitive process memory or crashing the SHELL service.
 - **Fix Recommendation**: Always check the return values of FFI calls, specifically `ptsname_r` and `posix_openpt`.
 
 **Finding 2: DoS vulnerabilities (Memory/Network)**
@@ -130,6 +131,7 @@ SageLink has been comprehensively audited for security, performance, reliability
 2. **Synchronous DH Computations:** `x25519` key exchanges run synchronously within the `mux_reader_loop`, blocking all other stream processing.
 3. **Busy Polling:** `stream_read_msg` uses `while true` loops with `thread.sleep(0.005)` to wait for queue messages.
 4. **Delayed Garbage Collection/Compaction:** Stream queues only compact when `queue_head >= 1024`, holding onto memory longer than necessary.
+5. **Inefficient SAGE_PATH Resolution:** Missing explicit SAGE_PATH propagation causes redundant directory traversals during sub-process executions in cross-compilation.
 
 **Estimated Impact:**
 - Excessive memory copying and garbage collection pauses during large file transfers.
@@ -172,3 +174,4 @@ SageLink has been comprehensively audited for security, performance, reliability
 **Missing Coverage:**
 - PTY file descriptor leaks: Error handling on mid-setup PTY operations in `handle_shell_stream` is incomplete; if an intermediate step fails, file descriptors might leak before cleanup occurs.
 - Network timeouts are entirely missing from integration tests.
+- Cross-compilation targets (`aarch64`, `rv64`) lack dedicated end-to-end integration test runners in CI.

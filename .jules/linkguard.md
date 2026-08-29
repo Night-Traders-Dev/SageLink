@@ -37,3 +37,4 @@
 ## Build system pitfalls
 - `sagemake` acts as a unified orchestrator but global test commands (`sagemake test`) risk timeouts if tests are not explicitly targeted.
 - Submodules (like `sagelang-lib-gc` or `sagelang-lib-crypto`) require precise initialization to avoid missing dependencies during cross-compilation.
+- Cross-compilation utilizing sagevm can fail silently if the SAGE_PATH environment variable is not explicitly propagated to subprocesses, causing dependency resolution failures for embedded submodules like sagelang-lib-crypto.
