@@ -18,6 +18,7 @@
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
 ## Performance bottlenecks
+- **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
 - **Array Operations Overhead**: O(N^2) or high O(N) array operations (list copying and string concatenation) create significant overhead, especially when handling byte arrays in transport framing or UUID generation.
 - **Busy Polling**: Tight polling loops relying heavily on `thread.sleep(0.005)` (e.g., `stream_read_msg` in `src/mux/stream.sage`) for stream reading and rekeying synchronization waste CPU cycles.
 - **Synchronous Cryptography**: Heavy Diffie-Hellman (DH) computations are executed synchronously on the main reader loops, stalling multiplexing throughput.
@@ -25,6 +26,7 @@
 - **Inefficient Stream Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 
 ## Architectural weaknesses
+- **FFI Boundary Bypassing**: Heavy reliance on direct IPC via FFI (e.g., `ffi_call(libc, "system")` in `src/app/shell.sage`) bypasses standard SageLang sandbox limits and type safety boundaries, elevating risks of native crashes.
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.
 - **Hardcoded Memory Offsets**: Relying on fixed C struct offsets (e.g., `winsize` offset calculations) completely breaks cross-platform compatibility across disparate architectures and OS kernels.
