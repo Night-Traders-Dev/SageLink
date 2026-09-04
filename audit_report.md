@@ -65,8 +65,8 @@ SageLink has been comprehensively audited for security, performance, reliability
 
 ## Repository Health Score
 
-- Security: 6.3/10
-- Performance: 5.8/10
+- Security: 5.5/10
+- Performance: 5.2/10
 - Reliability: 5.5/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
@@ -107,6 +107,17 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
+
+**Finding 8: Unbounded Aggregate Stream Queue Memory Exhaustion**
+- **Severity**: High
+- **Evidence**: `mux_reader_loop` in `src/mux/stream.sage` bounds individual stream queues to 1000 items (`max_queue_size`), but does not restrict the aggregate byte size of those queues. A malicious peer can open up to 65535 streams and flood them with 1MB frames, leading to silent memory exhaustion before any single queue hits the 1000-item limit.
+- **Fix Recommendation**: Implement an aggregate byte size limit tracker across all multiplexer stream queues and enforce strict payload boundaries for incoming packets.
+
+**Finding 9: Inefficient Stream Resolution DoS**
+- **Severity**: Medium
+- **Evidence**: `mux_open_stream` in `src/mux/stream.sage` utilizes a linear probe up to 65536 iterations (`while stream_id == 0 or mux["streams"][str(stream_id)] != nil:`) to find an available stream ID.
+- **Fix Recommendation**: Use a randomized ID generation algorithm or an efficient unallocated ID pool rather than a linear search across the entire domain.
+
 
 ## Performance Report
 
