@@ -2,6 +2,8 @@
 
 ## Architecture Map
 
+*Updated Architecture mapping covering communication and application layers.*
+
 **Major Subsystems:**
 - CMD Service (`src/app/cmd.sage`): Handles remote command execution and exit code retrieval.
 - FILE Service (`src/app/file.sage`): Handles chunked file transfers and SHA-256 integrity checks.
@@ -57,15 +59,16 @@ SageLink has been comprehensively audited for security, performance, reliability
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+10. **Disk Space Exhaustion via Incomplete Cleanup**: `src/app/file.sage` leaves partially downloaded files on disk if a transfer is aborted or connection drops mid-transfer, leading to gradual storage depletion.
 
 ## Other Notable Findings
+- **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
+- Security: 6.2/10
 - Performance: 5.8/10
 - Reliability: 5.5/10
 - Maintainability: 7.0/10
@@ -107,6 +110,11 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
+
+**Finding 10: Disk Space Exhaustion via Incomplete Cleanup**
+- **Severity**: Medium
+- **Evidence**: `app/file.sage` does not reliably clean up the target file when `stream_read_msg` returns `nil` due to a broken connection mid-transfer. It breaks the loop but fails to check if `bytes_written < file_size` to call `io.remove()`.
+- **Fix Recommendation**: Ensure that aborted file transfers actively call `io.remove(filename)` in the `handle_file_stream` after the loop if `bytes_written < file_size`.
 
 ## Performance Report
 
