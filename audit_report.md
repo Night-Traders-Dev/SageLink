@@ -8,7 +8,7 @@
 - SHELL Service (`src/app/shell.sage`): Manages interactive PTY sessions and terminal resizing.
 - Stream Multiplexing (`src/mux/stream.sage`): Provides stream isolation and flow control.
 - Transport Encryption (`src/transport/framing.sage`, `replay_window.sage`): ChaCha20-Poly1305 AEAD framing.
-- Handshake (`src/handshake/noise_ik.sage`): Noise_IK protocol for mutual authentication.
+- Handshake (`src/handshake/noise_ik.sage`): Noise_IK protocol for mutual authentication, handling X25519 DH key exchanges.
 - Command Line Interface (`src/cli/sagelink.sage`): Entry point for daemon and client connections.
 - Utilities & Helpers (`src/utils.sage`): Common data transformation functions.
 
@@ -44,7 +44,7 @@
 
 ## Executive Summary
 
-SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations. Additionally, it identifies resource exhaustion vectors like disk space depletion on failed transfers and file descriptor leaks in PTY setups, which must be addressed to ensure stable long-term deployments.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -57,9 +57,10 @@ SageLink has been comprehensively audited for security, performance, reliability
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+10. **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
 ## Other Notable Findings
+- **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
@@ -67,7 +68,7 @@ SageLink has been comprehensively audited for security, performance, reliability
 
 - Security: 6.3/10
 - Performance: 5.8/10
-- Reliability: 5.5/10
+- Reliability: 5.4/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
 
@@ -103,6 +104,11 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Evidence**: `mux_reader_loop` unconditionally executes `thread.spawn(run_cb)` for every incoming `CHAN_OPEN` request without checking active stream counts.
 - **Fix Recommendation**: Introduce a thread pool, or enforce a global concurrent stream limit for authenticated peers.
 
+**Finding 8: Unbounded FILE Queue Byte Size**
+- **Severity**: High
+- **Evidence**: `src/mux/stream.sage` imposes a 1000-item queue size limit in `max_queue_size`, but lacks bounding for the aggregate byte size of payloads, risking silent memory exhaustion.
+- **Fix Recommendation**: Implement byte-size limits for stream queues alongside the item count limits.
+
 **Finding 7: FFI Boundary Bypassing**
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
@@ -130,6 +136,7 @@ SageLink has been comprehensively audited for security, performance, reliability
 - Replace sleep-based polling with blocking condition variables or I/O signaling constructs.
 - Utilize circular buffers (ring buffers) for stream queues to completely eliminate manual array compaction.
 - Consider dynamically scaling chunk sizes or optimizing I/O buffers for FILE transfers.
+- Implement background cleanup threads to remove incomplete file transfers and prevent disk space exhaustion.
 
 ## Functionality Report
 
@@ -149,3 +156,4 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
 - **Network Timeout Tests**: Integration tests do not validate the system's behavior against stalled or slow network connections.
 - **Cross-Compilation Verification**: Dedicated integration test runners for `aarch64` and `rv64` architectures are not enforced in the standard CI pipeline.
+- **Disk Cleanup on Failure**: Missing test coverage in `src/app/file.sage` to ensure aborted file transfers delete temporary or partial files to prevent disk space exhaustion.

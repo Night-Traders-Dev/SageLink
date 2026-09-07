@@ -8,7 +8,7 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
-- **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
+- **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes. Always prefer `execve` or `execvp` for spawning tracked long-running child processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
 - **DoS via Memory Exhaustion**: Lack of bounding on memory allocations (accepting payload sizes up to 1MB pre-authentication) and unbounded thread spawning expose the application to denial of service. Furthermore, while `src/mux/stream.sage` imposes a 1000-item queue size limit, it lacks a bounding mechanism for the aggregate byte size of the payload, risking silent memory exhaustion.
@@ -34,7 +34,7 @@
 
 ## Reliability risks
 - **Incomplete Write Handling**: `write()` syscalls via FFI lack validation for partial writes, risking truncated data streams during heavy loads.
-- **File Descriptor Leaks**: PTY master/slave manipulation directly via FFI easily leaks file descriptors if mid-setup error pathways are triggered without cleanup.
+- **File Descriptor Leaks**: PTY master/slave manipulation directly via FFI easily leaks file descriptors if mid-setup error pathways are triggered without cleanup. Ensure all early returns during FFI calls close acquired file descriptors.
 - **FFI IPC Instability**: Spawning shells and interacting with PTYs via direct `libc` FFI calls (e.g. `src/app/shell.sage`) bypasses standard process boundaries, introducing silent truncation risks on partial writes.
 - **Synchronization Deadlocks**: The absence of strict timeouts on blocking `while true` synchronization structures (e.g., awaiting rekeying status) risks indefinite hangs.
 
