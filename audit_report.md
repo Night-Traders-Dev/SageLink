@@ -3,6 +3,7 @@
 ## Architecture Map
 
 **Major Subsystems:**
+- Handshake Protocol (`src/handshake/noise_ik.sage`): Noise_IK mutual authentication state machine.
 - CMD Service (`src/app/cmd.sage`): Handles remote command execution and exit code retrieval.
 - FILE Service (`src/app/file.sage`): Handles chunked file transfers and SHA-256 integrity checks.
 - SHELL Service (`src/app/shell.sage`): Manages interactive PTY sessions and terminal resizing.
@@ -55,19 +56,20 @@ SageLink has been comprehensively audited for security, performance, reliability
 5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
 6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
-8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+8. **Disk Space Exhaustion Risks**: Incomplete disk cleanup in `src/app/file.sage` on failed or aborted file transfers leads to gradual storage depletion because partial files are not removed when streams break early.
+9. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
+10. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
 
 ## Other Notable Findings
+- **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
+- Security: 6.2/10
 - Performance: 5.8/10
-- Reliability: 5.5/10
+- Reliability: 5.4/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
 
@@ -107,6 +109,12 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
+
+
+**Finding 8: Disk Space Exhaustion via Incomplete Cleanup**
+- **Severity**: High
+- **Evidence**: In `src/app/file.sage`, if the read loop `break`s due to network aborts or invalid chunk offsets, the file is closed but not deleted because the integrity check block `if bytes_written >= file_size` is entirely bypassed.
+- **Fix Recommendation**: Ensure that `io.remove(filename)` is always called in an `else` or `finally` clause if a transfer aborts prematurely.
 
 ## Performance Report
 
