@@ -8,6 +8,7 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Memory Leaks in FFI/IO Buffers**: Forgetting to invoke `mem_free()` on dynamically allocated `mem_alloc()` buffers after successful operations or mid-function exits (e.g., `read_buf` in `src/app/file.sage`), leading to memory exhaustion over time.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
@@ -26,6 +27,7 @@
 - **Inefficient Stream Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 
 ## Architectural weaknesses
+- **Hardcoded Struct Offsets**: Relying on strict fixed byte offsets for reading/writing C structs (e.g., `fstat` `st_size` offset of 48 bytes in `src/app/file.sage`, and `winsize` 8 bytes in `src/app/shell.sage`), which breaks execution on macOS and ARM kernels.
 - **FFI Boundary Bypassing**: Heavy reliance on direct IPC via FFI (e.g., `ffi_call(libc, "system")` in `src/app/shell.sage`) bypasses standard SageLang sandbox limits and type safety boundaries, elevating risks of native crashes.
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.
@@ -33,6 +35,7 @@
 - **Unbounded Multiplexing Queues**: Multiplexer queues bound the element count but fail to restrict the aggregate byte size, leading to unpredictable memory usage.
 
 ## Reliability risks
+- **Cross-Platform Failure Risks**: Platform-specific assumptions (like struct padding and endianness) directly embedded in SageLang logic inevitably cause runtime failures across different architectures without providing meaningful error contexts.
 - **Incomplete Write Handling**: `write()` syscalls via FFI lack validation for partial writes, risking truncated data streams during heavy loads.
 - **File Descriptor Leaks**: PTY master/slave manipulation directly via FFI easily leaks file descriptors if mid-setup error pathways are triggered without cleanup.
 - **FFI IPC Instability**: Spawning shells and interacting with PTYs via direct `libc` FFI calls (e.g. `src/app/shell.sage`) bypasses standard process boundaries, introducing silent truncation risks on partial writes.
