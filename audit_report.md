@@ -57,9 +57,10 @@ SageLink has been comprehensively audited for security, performance, reliability
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+10. **Arbitrary File Overwrite in Current Working Directory**: The FILE service in `src/app/file.sage` uses `ffi_open_write(filename)` with `O_TRUNC` without restricting filenames, allowing authenticated peers to overwrite critical files like `identity.key`.
 
 ## Other Notable Findings
+- **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
@@ -107,6 +108,11 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
+
+**Finding 8: Arbitrary File Overwrite in Current Working Directory**
+- **Severity**: High
+- **Evidence**: `app/file.sage` relies on `ffi_open_write(filename)` (which is defined on line 22 and calls `open` with `O_TRUNC` on line 28) to create output files on line 303 (`let open_res = ffi_open_write(filename)`). Because it only sanitizes `/` and `\`, an authenticated peer can provide a filename like `identity.key` to silently overwrite critical server configurations in the current working directory.
+- **Fix Recommendation**: Implement a strict allowlist of allowed characters for filenames (e.g., alphanumeric and safe symbols) and ensure that output files are written to a dedicated, restricted transfer directory rather than the current working directory.
 
 ## Performance Report
 
