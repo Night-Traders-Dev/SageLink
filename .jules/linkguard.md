@@ -8,13 +8,14 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Arbitrary File Overwrite**: The FILE service (`src/app/file.sage`) uses `ffi_open_write(filename)` with `O_CREAT | O_TRUNC` directly on extracted file basenames in the working directory, lacking path collision checks. This allows authenticated peers to blindly overwrite critical files like `peers.toml`.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
 - **DoS via Memory Exhaustion**: Lack of bounding on memory allocations (accepting payload sizes up to 1MB pre-authentication) and unbounded thread spawning expose the application to denial of service. Furthermore, while `src/mux/stream.sage` imposes a 1000-item queue size limit, it lacks a bounding mechanism for the aggregate byte size of the payload, risking silent memory exhaustion.
 - **DoS via CPU Exhaustion**: O(N^2) string concatenation when parsing large `CHAN_OPEN` payloads authenticated by malicious peers.
 - **Unhandled FFI Returns**: Neglecting to validate FFI return values (e.g., ignoring `ptsname_r` errors) opens vectors for out-of-bounds (OOB) memory reads on uninitialized buffers.
-- **DoS via Slowloris**: The application lacks network timeouts during handshakes and stream reading, making it susceptible to connection stagnation attacks.
+- **DoS via Slowloris (Permanent Server Lockout)**: The application lacks network timeouts during handshakes (`tcp.recvall` in `src/cli/sagelink.sage`) and stream reading. Because the blocking calls run within the unauthenticated connection limit context, stagnant connections prevent the `active_connections` counter from decrementing, leading to permanent server lockout where all legitimate clients are rejected.
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
 ## Performance bottlenecks
