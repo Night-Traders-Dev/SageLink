@@ -56,10 +56,12 @@ SageLink has been comprehensively audited for security, performance, reliability
 6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+9. **Unbounded File Writes**: `handle_file_stream` in `src/app/file.sage` limits chunk offsets to the declared file size, but fails to implement a global file size quota, making it susceptible to disk exhaustion during malicious transfers.
+10. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
 
 ## Other Notable Findings
+- **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+- **Inefficient Number Formatting**: Custom integer-to-byte slicing and concatenation loops (`uint64_to_bytes` in `src/transport/framing.sage`) add repetitive overhead during frame header generation.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
@@ -108,6 +110,11 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
 
+**Finding 8: Unbounded File Writes**
+- **Severity**: Medium
+- **Evidence**: `handle_file_stream` in `src/app/file.sage` correctly uses the declared `file_size` parameter from `FILE_META` to bound writes, but never validates if this globally declared `file_size` exceeds logical or system quota limits.
+- **Fix Recommendation**: Implement an absolute maximum file size quota check during `FILE_META` parsing prior to opening the file for write.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -117,12 +124,14 @@ SageLink has been comprehensively audited for security, performance, reliability
 4. **Delayed Queue Compaction:** Stream queues only compact when `queue_head >= 1024`, causing memory retention spikes during heavy traffic.
 5. **Inefficient Path Resolution:** Missing explicit SAGE_PATH propagation causes redundant directory traversals when resolving submodules.
 6. **Hardcoded Memory Bounds**: The `16384` byte read buffer in `src/app/file.sage` limits theoretical max throughput.
+7. **Inefficient Number Formatting:** Custom integer-to-byte splicing loops in `uint64_to_bytes` (`src/transport/framing.sage`) manually calculate byte arrays, adding repetitive execution overhead on every frame transmission.
 
 **Estimated Impact:**
 - Noticeable memory copying overhead and frequent garbage collection pauses during large FILE transfers.
 - Severe concurrency bottlenecks when multiple peers rekey simultaneously.
 - Consistently high idle CPU utilization, severely impacting battery life on embedded devices.
 - Potential file transfer speed bottlenecks on high-bandwidth links due to strict chunking limits.
+- Noticeable repetitive execution overhead during high-frequency frame generation via `uint64_to_bytes` in transport framing.
 
 **Recommended Fixes:**
 - Preallocate byte arrays and utilize memory slices/views rather than iterative pushing and string concatenation.
@@ -130,6 +139,7 @@ SageLink has been comprehensively audited for security, performance, reliability
 - Replace sleep-based polling with blocking condition variables or I/O signaling constructs.
 - Utilize circular buffers (ring buffers) for stream queues to completely eliminate manual array compaction.
 - Consider dynamically scaling chunk sizes or optimizing I/O buffers for FILE transfers.
+- Utilize native byte-packing functions or dedicated bitwise operator blocks instead of loop-based division for frame headers.
 
 ## Functionality Report
 

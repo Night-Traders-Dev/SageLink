@@ -18,6 +18,7 @@
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
 ## Performance bottlenecks
+- **Inefficient Number Formatting**: Custom integer-to-byte slicing and concatenation loops (`uint64_to_bytes` in `src/transport/framing.sage`) add repetitive overhead during frame header generation.
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
 - **Array Operations Overhead**: O(N^2) or high O(N) array operations (list copying and string concatenation) create significant overhead, especially when handling byte arrays in transport framing or UUID generation.
 - **Busy Polling**: Tight polling loops relying heavily on `thread.sleep(0.005)` (e.g., `stream_read_msg` in `src/mux/stream.sage`) for stream reading and rekeying synchronization waste CPU cycles.
@@ -33,6 +34,7 @@
 - **Unbounded Multiplexing Queues**: Multiplexer queues bound the element count but fail to restrict the aggregate byte size, leading to unpredictable memory usage.
 
 ## Reliability risks
+- **Unbounded File Writes**: `handle_file_stream` in `src/app/file.sage` bounds incoming chunk offsets to the declared file size, but fails to implement an absolute maximum file size limit, leaving it vulnerable to disk exhaustion.
 - **Incomplete Write Handling**: `write()` syscalls via FFI lack validation for partial writes, risking truncated data streams during heavy loads.
 - **File Descriptor Leaks**: PTY master/slave manipulation directly via FFI easily leaks file descriptors if mid-setup error pathways are triggered without cleanup.
 - **FFI IPC Instability**: Spawning shells and interacting with PTYs via direct `libc` FFI calls (e.g. `src/app/shell.sage`) bypasses standard process boundaries, introducing silent truncation risks on partial writes.
