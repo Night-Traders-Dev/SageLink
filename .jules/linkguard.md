@@ -15,7 +15,7 @@
 - **DoS via CPU Exhaustion**: O(N^2) string concatenation when parsing large `CHAN_OPEN` payloads authenticated by malicious peers.
 - **Unhandled FFI Returns**: Neglecting to validate FFI return values (e.g., ignoring `ptsname_r` errors) opens vectors for out-of-bounds (OOB) memory reads on uninitialized buffers.
 - **DoS via Slowloris**: The application lacks network timeouts during handshakes and stream reading, making it susceptible to connection stagnation attacks.
-- **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
+- **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion. Specifically, in `src/app/file.sage` around line 400, if `bytes_written < file_size` due to an early stream disconnect, the partial file is never removed by `io.remove(filename)`, leaving orphaned data on disk.
 
 ## Performance bottlenecks
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
