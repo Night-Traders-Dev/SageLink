@@ -3,7 +3,7 @@
 ## Architecture Map
 
 **Major Subsystems:**
-- CMD Service (`src/app/cmd.sage`): Handles remote command execution and exit code retrieval.
+- CMD Service (`src/app/cmd.sage`): Handles remote command execution (via FFI) and exit code retrieval.
 - FILE Service (`src/app/file.sage`): Handles chunked file transfers and SHA-256 integrity checks.
 - SHELL Service (`src/app/shell.sage`): Manages interactive PTY sessions and terminal resizing.
 - Stream Multiplexing (`src/mux/stream.sage`): Provides stream isolation and flow control.
@@ -44,12 +44,12 @@
 
 ## Executive Summary
 
-SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies (reducing supply-chain risks). However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
 
 1. **Unintended Double-Execution of Commands**: `src/app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
-2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
+2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` (e.g., `let pts_res = ffi_call(libc, "ptsname_r"...)`) risks out-of-bounds memory reads on uninitialized buffers.
 3. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
 4. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
 5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
@@ -57,16 +57,17 @@ SageLink has been comprehensively audited for security, performance, reliability
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit (`let read_buf2 = mem_alloc(16384)`), which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 
 ## Other Notable Findings
+- **Disk Space Exhaustion**: Incomplete disk cleanup in `src/app/file.sage`. If `bytes_written < file_size` due to an early stream disconnect, the partial file is never removed by `io.remove(filename)`.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
 - Security: 6.3/10
-- Performance: 5.8/10
+- Performance: 5.7/10
 - Reliability: 5.5/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
