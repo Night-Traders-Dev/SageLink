@@ -16,6 +16,7 @@
 - **Unhandled FFI Returns**: Neglecting to validate FFI return values (e.g., ignoring `ptsname_r` errors) opens vectors for out-of-bounds (OOB) memory reads on uninitialized buffers.
 - **DoS via Slowloris**: The application lacks network timeouts during handshakes and stream reading, making it susceptible to connection stagnation attacks.
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
+- **Memory Leaks in Error Paths**: Early returns on system call failures (e.g., `fstat` in `src/app/file.sage` line 84) bypass manual memory cleanup functions like `mem_free`, leading to memory leaks.
 
 ## Performance bottlenecks
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.

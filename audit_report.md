@@ -63,6 +63,8 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
+- **Memory Leak on Fstat Failure**: Early return in `src/app/file.sage` leaves `stat_buf` un-freed.
+
 ## Repository Health Score
 
 - Security: 6.3/10
@@ -107,6 +109,12 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
+
+
+**Finding 8: Memory Leak on Fstat Failure**
+- **Severity**: Low
+- **Evidence**: `src/app/file.sage` (lines 80-88) allocates `stat_buf` via `mem_alloc(144)` but returns without freeing it if `fstat_res < 0`.
+- **Fix Recommendation**: Add `mem_free(stat_buf)` before returning `false` on `fstat` failure.
 
 ## Performance Report
 
