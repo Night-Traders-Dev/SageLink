@@ -8,6 +8,8 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Insecure Default File Permissions**: File creation operations often default to overly permissive modes (e.g., `0o666`), lacking strict access controls.
+- **Predictable Temporary Files**: Reliance on predictable values (like timestamps or `sys.clock()`) for temporary file naming opens vectors for race conditions and symlink attacks.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
@@ -26,6 +28,7 @@
 - **Inefficient Stream Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 
 ## Architectural weaknesses
+- **Hardcoded Permission Flags**: Permissions are hardcoded at the point of file creation via FFI (e.g. `open(..., 438)`) rather than configurable or securely restricted by default.
 - **FFI Boundary Bypassing**: Heavy reliance on direct IPC via FFI (e.g., `ffi_call(libc, "system")` in `src/app/shell.sage`) bypasses standard SageLang sandbox limits and type safety boundaries, elevating risks of native crashes.
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.
