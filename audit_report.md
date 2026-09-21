@@ -33,6 +33,7 @@
 - `sagelang-lib-crypto` (loaded as `crypto` submodule for AES/ChaCha/Hash ops)
 - `sagelang-lib-gc` (loaded as `sagelang-lib-gc` submodule for memory management)
 - `libc` (loaded via FFI for PTY, process operations, and file I/O)
+- `peers.toml` (external configuration for pinned static keys and authentication)
 - No external FFI dependency for cryptographic operations (hand-rolled)
 
 **Build Systems:**
@@ -44,7 +45,7 @@
 
 ## Executive Summary
 
-SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+SageLink has been comprehensively audited for security, performance, reliability, maintainability, and functionality. The implementation adheres nicely to a clean modular architecture and successfully builds custom cryptographic primitives without external FFI dependencies. However, the audit revealed critical functionality flaws and significant security risks. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, insecure file permissions during creation and predictable temporary file naming during key generation pose significant data exposure risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -56,16 +57,18 @@ SageLink has been comprehensively audited for security, performance, reliability
 6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
+9. **Insecure File Permissions**: Files are created with overly permissive defaults (e.g. `0o666` in `src/app/file.sage`), risking unauthorized access.
+10. **Predictable Temporary Files**: `src/cli/sagelink.sage` uses predictable naming (`identity.key.tmp.` + `sys.clock()`) during key generation, making it vulnerable to symbolic link attacks and race conditions.
 
 ## Other Notable Findings
+- **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
+- **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
+- Security: 5.7/10
 - Performance: 5.8/10
 - Reliability: 5.5/10
 - Maintainability: 7.0/10
@@ -108,10 +111,21 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
 
+
+**Finding 8: Insecure File Permissions**
+- **Severity**: High
+- **Evidence**: In `src/app/file.sage`, `ffi_open_write` passes `438` (`0o666`) to the `open` syscall when creating files, allowing broad read/write access.
+- **Fix Recommendation**: Restrict file permissions using a more secure mode, such as `0o600` or `0o640`, to prevent unauthorized access.
+
+**Finding 9: Predictable Temporary Files**
+- **Severity**: Medium
+- **Evidence**: `src/cli/sagelink.sage` generates temporary key files using `identity.key.tmp.` concatenated with `sys.clock()`. Since `sys.clock()` is highly predictable, attackers can guess the file name and launch symlink attacks or monitor sensitive data.
+- **Fix Recommendation**: Use a cryptographically secure random number generator or `mkstemp()` (if available via FFI) to guarantee unpredictable temporary file names.
+
 ## Performance Report
 
 **Bottlenecks:**
-1. **O(N^2) Array Operations:** Iteratively pushing to arrays or concatenating strings in `utils.bytes`, `utils.to_list`, and payload parsers causes high memory churn.
+1. **O(N^2) Array Operations:** Iteratively pushing to arrays or concatenating strings in `utils.bytes`, `utils.to_list`, and payload parsers causes high memory churn. The `utils.to_list` function introduces unnecessary copying overhead for large buffers.
 2. **Synchronous DH Computations:** `x25519` key exchanges block the main `mux_reader_loop` synchronously, halting all other stream processing.
 3. **Busy Polling Mechanisms:** Functions like `stream_read_msg` in `src/mux/stream.sage` rely on `while true` loops with `thread.sleep(0.005)` to await queue messages, wasting CPU cycles.
 4. **Delayed Queue Compaction:** Stream queues only compact when `queue_head >= 1024`, causing memory retention spikes during heavy traffic.
@@ -149,3 +163,4 @@ SageLink has been comprehensively audited for security, performance, reliability
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
 - **Network Timeout Tests**: Integration tests do not validate the system's behavior against stalled or slow network connections.
 - **Cross-Compilation Verification**: Dedicated integration test runners for `aarch64` and `rv64` architectures are not enforced in the standard CI pipeline.
+- **File Permission Tests**: Missing tests to verify that files are created with securely restricted permissions and temporary files are unpredictable.
