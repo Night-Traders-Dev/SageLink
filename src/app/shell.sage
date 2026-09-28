@@ -16,13 +16,9 @@ proc get_libc():
         let libc = ffi_open("libc.so.6")
         if libc == nil:
             libc = ffi_open("libc.so")
-        end
         if libc == nil:
             libc = ffi_open("")
-        end
         return libc
-    end
-end
 
 proc get_ioctl_ctty():
     let uname = sys.shell_exec("uname -s")
@@ -32,8 +28,6 @@ proc get_ioctl_ctty():
     else:
         # Linux: TIOCSCTTY = 0x540E
         return 21518
-    end
-end
 
 proc get_ioctl_winsz():
     let uname = sys.shell_exec("uname -s")
@@ -43,8 +37,6 @@ proc get_ioctl_winsz():
     else:
         # Linux: TIOCSWINSZ = 0x5414
         return 21524
-    end
-end
 
 # Dedicated loop to read from PTY master and write to the multiplexed stream
 proc pty_to_stream_loop(master_fd, mux, s):
@@ -53,32 +45,25 @@ proc pty_to_stream_loop(master_fd, mux, s):
     if libc == nil:
         stream.stream_close(mux, s)
         return
-    end
     
     while not s["closed"] and mux["running"]:
         let nread = ffi_call(libc, "read", "int", [master_fd, read_buf, 4096])
         if nread <= 0:
             break
-        end
         
         # Build payload list
         let data = []
         for i in range(nread):
             push(data, mem_read(read_buf, i, "byte"))
-        end
         
         # Write to stream
-        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, utils.bytes(data)):
+        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, utils.to_bytes(data)):
             break
-        end
-    end
     
     mem_free(read_buf)
     if libc != nil:
         ffi_close(libc)
-    end
     stream.stream_close(mux, s)
-end
 
 # Server-side handler for a SHELL stream
 proc handle_shell_stream(mux, s):
@@ -87,7 +72,6 @@ proc handle_shell_stream(mux, s):
         print "Error: libc FFI not available on server"
         stream.stream_close(mux, s)
         return
-    end
 
     # 1. Open master PTY
     let master_fd = ffi_call(libc, "posix_openpt", "int", [258]) # O_RDWR | O_NOCTTY = 2 | 256 = 258
@@ -96,7 +80,6 @@ proc handle_shell_stream(mux, s):
         stream.stream_close(mux, s)
         ffi_close(libc)
         return
-    end
 
     ffi_call(libc, "grantpt", "int", [master_fd])
     ffi_call(libc, "unlockpt", "int", [master_fd])
@@ -110,10 +93,8 @@ proc handle_shell_stream(mux, s):
         let char_val = mem_read(name_buf, idx, "byte")
         if char_val == 0:
             break
-        end
         slave_name = slave_name + chr(char_val)
         idx = idx + 1
-    end
     mem_free(name_buf)
 
     # 3. Fork shell process
@@ -124,7 +105,6 @@ proc handle_shell_stream(mux, s):
         stream.stream_close(mux, s)
         ffi_close(libc)
         return
-    end
 
     if pid == 0:
         # ── Child Process ──
@@ -133,7 +113,6 @@ proc handle_shell_stream(mux, s):
         if slave_fd < 0:
             ffi_call(libc, "_exit", "void", [1])
             return
-        end
         
         # Create session
         ffi_call(libc, "setsid", "int", [])
@@ -155,13 +134,11 @@ proc handle_shell_stream(mux, s):
         
         ffi_call(libc, "_exit", "void", [0])
         return
-    end
 
     # ── Parent Process ──
     # Spawn PTY to Stream reader thread
     proc run_reader():
         pty_to_stream_loop(master_fd, mux, s)
-    end
     thread.spawn(run_reader)
     
     # Get platform-specific IOCTL constants
@@ -172,7 +149,6 @@ proc handle_shell_stream(mux, s):
         let msg = stream.stream_read_msg(s)
         if msg == nil:
             break
-        end
         
         if msg["msg_type"] == stream.SHELL_DATA:
             let payload = utils.to_list(msg["payload"])
@@ -181,11 +157,8 @@ proc handle_shell_stream(mux, s):
                 let write_buf = mem_alloc(count)
                 for i in range(count):
                     mem_write(write_buf, i, "byte", payload[i])
-                end
                 ffi_call(libc, "write", "int", [master_fd, write_buf, count])
                 mem_free(write_buf)
-            end
-        end
         
         if msg["msg_type"] == stream.SHELL_RESIZE:
             let payload = utils.to_list(msg["payload"])
@@ -208,16 +181,12 @@ proc handle_shell_stream(mux, s):
                 # TIOCSWINSZ (platform-specific)
                 ffi_call(libc, "ioctl", "int", [master_fd, ioctl_winsz, ws])
                 mem_free(ws)
-            end
-        end
-    end
     
     # Cleanup shell and close descriptors
     ffi_call(libc, "kill", "int", [pid, 9])
     ffi_call(libc, "close", "int", [master_fd])
     stream.stream_close(mux, s)
     ffi_close(libc)
-end
 
 # Client function to run an interactive shell session (stdin/stdout -> stream)
 # Note: Caller should configure raw terminal mode if needed
@@ -226,14 +195,12 @@ proc run_client_shell(mux):
     if s == nil:
         print "Error: Failed to open SHELL stream"
         return false
-    end
     
     let libc = get_libc()
     if libc == nil:
         print "Error: libc FFI not available on client"
         stream.stream_close(mux, s)
         return false
-    end
 
     # Thread to read from stream and write to client stdout
     proc stream_to_stdout():
@@ -242,7 +209,6 @@ proc run_client_shell(mux):
             let msg = stream.stream_read_msg(s)
             if msg == nil:
                 break
-            end
             
             if msg["msg_type"] == stream.SHELL_DATA:
                 let payload = utils.to_list(msg["payload"])
@@ -250,13 +216,8 @@ proc run_client_shell(mux):
                 if count > 0:
                     for i in range(count):
                         mem_write(write_buf, i, "byte", payload[i])
-                    end
                     ffi_call(libc, "write", "int", [1, write_buf, count]) # write to fd 1 (stdout)
-                end
-            end
-        end
         mem_free(write_buf)
-    end
     thread.spawn(stream_to_stdout)
     
     # Main thread reads from client stdin (fd 0) and writes to stream
@@ -265,20 +226,15 @@ proc run_client_shell(mux):
         let nread = ffi_call(libc, "read", "int", [0, read_buf, 4096]) # read from fd 0 (stdin)
         if nread <= 0:
             break
-        end
         
         let data = []
         for i in range(nread):
             push(data, mem_read(read_buf, i, "byte"))
-        end
         
-        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, utils.bytes(data)):
+        if not stream.stream_write_msg(mux, s, stream.SHELL_DATA, utils.to_bytes(data)):
             break
-        end
-    end
     
     mem_free(read_buf)
     ffi_close(libc)
     stream.stream_close(mux, s)
     return true
-end

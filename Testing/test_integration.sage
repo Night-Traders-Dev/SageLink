@@ -15,18 +15,14 @@ import sagelink.utils as utils
 proc to_list(b):
     if b == nil:
         return nil
-    end
     let out = []
     let t = type(b)
     if t == "string" or t == "str":
         for i in range(len(b)):
             push(out, ord(b[i]))
-        end
     else:
         for i in range(len(b)):
             push(out, b[i])
-        end
-    end
     return out
 
 print "========================================="
@@ -56,7 +52,6 @@ proc run_server():
     if listener == nil:
         print "Server: Failed to listen"
         return
-    end
     
     let sock = nil
     let msg1 = nil
@@ -68,7 +63,6 @@ proc run_server():
         if sock == nil or sock < 0:
             thread.sleep(0.01)
             continue
-        end
         print "Server: Client connected! Performing Noise_IK handshake..."
         
         # Handshake (Responder)
@@ -80,8 +74,6 @@ proc run_server():
         if msg1 == nil:
             print "Server: Connection closed before Msg 1. Retrying accept..."
             tcp.close(sock)
-        end
-    end
     print "Server: Msg 1 read (length: " + str(len(msg1)) + "). Parsing..."
     
     let read1 = noise_ik.read_message_1(bob_hs, msg1)
@@ -90,11 +82,10 @@ proc run_server():
         tcp.close(sock)
         tcp.close(listener)
         return
-    end
     
     # Write Msg 2 (Bob -> Alice)
     let msg2 = noise_ik.write_message_2(bob_hs, "Welcome, Alice! Glad to establish connection.")
-    tcp.sendall(sock, utils.bytes(msg2))
+    tcp.sendall(sock, utils.to_bytes(msg2))
     
     # Deriving split keys
     let bob_transport = noise_ik.split_handshake(bob_hs)
@@ -111,29 +102,21 @@ proc run_server():
         if s["service"] == "CMD":
             proc run_cmd():
                 cmd.handle_cmd_stream(m, s)
-            end
             thread.spawn(run_cmd)
-        end
         if s["service"] == "FILE":
             proc run_file():
                 file_app.handle_file_stream(m, s)
-            end
             thread.spawn(run_file)
-        end
         if s["service"] == "SHELL":
             proc run_shell():
                 shell_app.handle_shell_stream(m, s)
-            end
             thread.spawn(run_shell)
-        end
-    end
     
     stream.start_mux_reader(mux, server_stream_dispatcher)
     
     # Wait for client to finish
     while mux["running"]:
         thread.sleep(0.1)
-    end
     
     print "Server: Stopping..."
     tcp.close(sock)
@@ -148,7 +131,6 @@ proc run_client():
     if sock == nil:
         print "Client: Connection failed"
         return
-    end
     
     print "Client: Initiating Noise_IK handshake..."
     # Handshake (Initiator)
@@ -156,7 +138,7 @@ proc run_client():
     print "Client: Handshake initialized. Writing message 1..."
     let msg1 = noise_ik.write_message_1(alice_hs, "Hello, Bob! I am Alice.")
     print "Client: Message 1 written. Sending message 1 (length: " + str(len(msg1)) + ")..."
-    tcp.sendall(sock, utils.bytes(msg1))
+    tcp.sendall(sock, utils.to_bytes(msg1))
     print "Client: Message 1 sent. Reading message 2 (expecting 93 bytes)..."
     # Read Msg 2 (Bob -> Alice)
     let msg2 = to_list(tcp.recvall(sock, 93))
@@ -164,14 +146,12 @@ proc run_client():
         print "Client: Handshake failed to read Msg 2"
         tcp.close(sock)
         return
-    end
     
     let read2 = noise_ik.read_message_2(alice_hs, msg2)
     if read2 == nil:
         print "Client: Handshake failed to parse Msg 2"
         tcp.close(sock)
         return
-    end
     
     # Deriving split keys
     let alice_transport = noise_ik.split_handshake(alice_hs)
@@ -215,7 +195,6 @@ proc run_client():
         cmd.run_remote_cmd(mux, "rm test_recv.txt")
     else:
         print "Client: FILE TRANSFER FAILED!"
-    end
     
     # ── Test Interactive Shell Execution ──
     print "Client: Opening SHELL stream..."
@@ -229,8 +208,7 @@ proc run_client():
         let cmd_payload = []
         for i in range(len(shell_cmd)):
             push(cmd_payload, ord(shell_cmd[i]))
-        end
-        stream.stream_write_msg(mux, shell_s, stream.SHELL_DATA, utils.bytes(cmd_payload))
+        stream.stream_write_msg(mux, shell_s, stream.SHELL_DATA, utils.to_bytes(cmd_payload))
         
         # Read response
         thread.sleep(0.5)
@@ -247,16 +225,12 @@ proc run_client():
                 let s_out = ""
                 for i in range(len(p)):
                     s_out = s_out + chr(p[i])
-                end
                 print "Client: Shell output chunk:\n" + s_out
-            end
-        end
         
         stream.stream_close(mux, shell_s)
         print "Client: SHELL stream closed."
     else:
         print "Client: Failed to open SHELL stream"
-    end
     
     # Shut down mux
     mux["running"] = false
@@ -280,5 +254,3 @@ else:
         print "========================================="
         print "All integration tests completed!"
         print "========================================="
-    end
-end

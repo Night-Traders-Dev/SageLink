@@ -12,14 +12,28 @@ proc uint32_to_bytes(val):
         let byte_val = temp % 256
         b[3 - i] = byte_val
         temp = (temp - byte_val) / 256
-    end
     return b
 
+# Decode a big-endian integer from wire bytes.
+#
+# tcp.recvall() yields a string, where indexing gives a one-character string, and
+# the payload helpers here yield a bytes object, where indexing gives a number.
+# The old decoder did `val * 256 + b[i]` on whatever came in, so on the string
+# case that was `number + string` -- a hard type error that killed the reader on
+# the first frame. Normalise through utils.to_list() so both representations
+# decode identically.
+proc bytes_to_uint64(b):
+    let src = utils.to_list(b)
+    let val = 0
+    for i in range(8):
+        val = val * 256 + src[i]
+    return val
+
 proc bytes_to_uint32(b):
+    let src = utils.to_list(b)
     let val = 0
     for i in range(4):
-        val = val * 256 + b[i]
-    end
+        val = val * 256 + src[i]
     return val
 
 proc uint64_to_bytes(val):
@@ -29,15 +43,8 @@ proc uint64_to_bytes(val):
         let byte_val = temp % 256
         b[7 - i] = byte_val
         temp = (temp - byte_val) / 256
-    end
     return b
 
-proc bytes_to_uint64(b):
-    let val = 0
-    for i in range(8):
-        val = val * 256 + b[i]
-    end
-    return val
 
 # Encrypts a plaintext (list of bytes or bytes object) into an outer frame (bytes object)
 proc encrypt_frame(key, counter, plaintext):
@@ -59,20 +66,18 @@ proc encrypt_frame(key, counter, plaintext):
     # Prefix with length (4 bytes)
     let frame_bytes = len_bytes + payload
     
-    return utils.bytes(frame_bytes)
+    return utils.to_bytes(frame_bytes)
 
 # Decrypts a frame payload (excluding the length prefix, which was read from the socket)
 proc decrypt_frame(key, window, frame_payload_bytes):
     if len(frame_payload_bytes) < 8 + 16:
         return nil
-    end
     
     let counter_bytes = slice(frame_payload_bytes, 0, 8)
     let counter = bytes_to_uint64(counter_bytes)
     
     if not replay_window.check_replay(window, counter):
         return nil
-    end
     
     let tag_start = len(frame_payload_bytes) - 16
     let ciphertext = slice(frame_payload_bytes, 8, tag_start)
@@ -83,7 +88,6 @@ proc decrypt_frame(key, window, frame_payload_bytes):
     let decrypted = aead.chacha20_poly1305_decrypt(key, nonce, ciphertext, tag, [])
     if decrypted == nil:
         return nil
-    end
     
     replay_window.commit_replay(window, counter)
 
@@ -96,21 +100,17 @@ proc read_frame(sock, key, window):
     let len_raw = tcp.recvall(sock, 4)
     if len_raw == nil or len(len_raw) < 4:
         return nil
-    end
     
     let len_val = bytes_to_uint32(len_raw)
     if len_val < 8 + 16:
         return nil
-    end
     if len_val > 1048576: # 1MB limit
         return nil
-    end
     
     # Read payload bytes
     let payload_raw = tcp.recvall(sock, len_val)
     if payload_raw == nil or len(payload_raw) < len_val:
         return nil
-    end
     
     return decrypt_frame(key, window, payload_raw)
 

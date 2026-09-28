@@ -16,9 +16,9 @@ proc b64_encode(data):
     while i < n:
         let b1 = data[i]
         let b2 = 0
-        if i + 1 < n: b2 = data[i+1] end
+        if i + 1 < n: b2 = data[i+1]
         let b3 = 0
-        if i + 2 < n: b3 = data[i+2] end
+        if i + 2 < n: b3 = data[i+2]
         
         let c1 = b1 >> 2
         let c2 = ((b1 & 3) << 4) | (b2 >> 4)
@@ -32,17 +32,13 @@ proc b64_encode(data):
             out = out + B64_CHARS[c3]
         else:
             out = out + "="
-        end
         if i + 2 < n:
             out = out + B64_CHARS[c4]
         else:
             out = out + "="
-        end
         
         i = i + 3
-    end
     return out
-end
 
 proc test_oversized_chunk_rejected():
     print "Test: Oversized chunk rejected..."
@@ -58,12 +54,10 @@ proc test_oversized_chunk_rejected():
         print "  PASS: Oversized chunk correctly detected"
         io.remove(filename)
         return true
-    end
     
     print "  FAIL: Oversized chunk not detected"
     io.remove(filename)
     return false
-end
 
 proc test_exact_size_chunk_accepted():
     print "Test: Exact size chunk accepted..."
@@ -78,12 +72,10 @@ proc test_exact_size_chunk_accepted():
         print "  PASS: Exact size chunk accepted"
         io.remove(filename)
         return true
-    end
     
     print "  FAIL: Exact size chunk rejected"
     io.remove(filename)
     return false
-end
 
 proc test_undersized_chunk_accepted():
     print "Test: Undersized chunk accepted..."
@@ -98,12 +90,10 @@ proc test_undersized_chunk_accepted():
         print "  PASS: Undersized chunk accepted"
         io.remove(filename)
         return true
-    end
     
     print "  FAIL: Undersized chunk rejected"
     io.remove(filename)
     return false
-end
 
 proc test_integrity_check_on_exact_size():
     print "Test: Integrity check on exact size..."
@@ -120,19 +110,15 @@ proc test_integrity_check_on_exact_size():
     for i in range(32):
         if actual_hash[i] != expected[i]:
             hash_ok = false
-        end
-    end
     
     if hash_ok:
         print "  PASS: Hash matches for exact content"
         io.remove(filename)
         return true
-    end
     
     print "  FAIL: Hash mismatch"
     io.remove(filename)
     return false
-end
 
 proc test_integrity_check_fails_on_tampering():
     print "Test: Integrity check fails on tampering..."
@@ -152,19 +138,15 @@ proc test_integrity_check_fails_on_tampering():
     for i in range(32):
         if actual_hash[i] != expected[i]:
             hash_ok = false
-        end
-    end
     
     if not hash_ok:
         print "  PASS: Hash correctly detects tampering"
         io.remove(filename)
         return true
-    end
     
     print "  FAIL: Hash did not detect tampering"
     io.remove(filename)
     return false
-end
 
 proc test_file_size_exceeded_declared():
     print "Test: File size exceeded declared size..."
@@ -178,7 +160,6 @@ proc test_file_size_exceeded_declared():
         print "  PASS: Exceeded size detected"
         io.remove(filename)
         return true
-    end
     
     # Test exact size
     bytes_written = 10
@@ -187,15 +168,12 @@ proc test_file_size_exceeded_declared():
             print "  PASS: > size correctly handled"
         else:
             print "  PASS: == size correctly handled"
-        end
         io.remove(filename)
         return true
-    end
     
     print "  FAIL: Size check logic incorrect"
     io.remove(filename)
     return false
-end
 
 # Main test runner
 print "========================================="
@@ -218,8 +196,6 @@ for i in range(len(results)):
         passed = passed + 1
     else:
         failed = failed + 1
-    end
-end
 
 print ""
 print "========================================="
@@ -228,4 +204,3 @@ print "========================================="
 
 if failed > 0:
     sys.exit(1)
-end

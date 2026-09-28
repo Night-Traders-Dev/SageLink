@@ -15,10 +15,8 @@ proc concat_bytes(a, b):
     let b_bytes = blake2s.to_byte_list(b)
     for i in range(len(a_bytes)):
         push(r, a_bytes[i])
-    end
     for i in range(len(b_bytes)):
         push(r, b_bytes[i])
-    end
     return r
 
 proc mix_hash(hs, data):
@@ -37,7 +35,6 @@ proc encrypt_and_hash(hs, plaintext):
     if hs["k"] == nil:
         mix_hash(hs, pt_bytes)
         return pt_bytes
-    end
     
     # encode hs["n"] as 12-byte big-endian nonce
     let nonce = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -46,7 +43,6 @@ proc encrypt_and_hash(hs, plaintext):
         let byte_val = val % 256
         nonce[11 - i] = byte_val
         val = (val - byte_val) / 256
-    end
     
     let aead_out = aead.chacha20_poly1305_encrypt(hs["k"], nonce, pt_bytes, hs["h"])
     let ciphertext = concat_bytes(aead_out["ciphertext"], aead_out["tag"])
@@ -59,11 +55,9 @@ proc decrypt_and_hash(hs, ciphertext):
     if hs["k"] == nil:
         mix_hash(hs, ct_bytes)
         return ct_bytes
-    end
     
     if len(ct_bytes) < 16:
         return nil
-    end
     let tag_start = len(ct_bytes) - 16
     let ct = slice(ct_bytes, 0, tag_start)
     let tag = slice(ct_bytes, tag_start, len(ct_bytes))
@@ -75,12 +69,10 @@ proc decrypt_and_hash(hs, ciphertext):
         let byte_val = val % 256
         nonce[11 - i] = byte_val
         val = (val - byte_val) / 256
-    end
     
     let decrypted = aead.chacha20_poly1305_decrypt(hs["k"], nonce, ct, tag, hs["h"])
     if decrypted == nil:
         return nil
-    end
     mix_hash(hs, ct_bytes)
     hs["n"] = hs["n"] + 1
     return decrypted
@@ -90,7 +82,6 @@ proc get_u_base():
     push(u_base, 9)
     for i in range(31):
         push(u_base, 0)
-    end
     return u_base
 
 proc generate_keypair():
@@ -116,7 +107,6 @@ proc initialize_handshake(role, static_keypair, remote_static_pub = nil):
         mix_hash(hs, remote_static_pub)
     else:
         mix_hash(hs, static_keypair["pub"])
-    end
     
     return hs
 
@@ -143,7 +133,6 @@ proc read_message_1(hs, msg):
     # -> e, es, s, ss
     if len(msg) < 80:
         return nil
-    end
     
     let re_pub = slice(msg, 0, 32)
     hs["re"] = re_pub
@@ -156,7 +145,6 @@ proc read_message_1(hs, msg):
     let rs_pub = decrypt_and_hash(hs, encrypted_s)
     if rs_pub == nil:
         return nil
-    end
     hs["rs"] = rs_pub
     
     let dh_ss = x25519.x25519(hs["s_a"]["priv"], rs_pub)
@@ -166,7 +154,6 @@ proc read_message_1(hs, msg):
     let payload = decrypt_and_hash(hs, encrypted_payload)
     if payload == nil:
         return nil
-    end
     
     return {"payload": payload, "rs": rs_pub}
 
@@ -190,7 +177,6 @@ proc read_message_2(hs, msg):
     # <- e, ee, se
     if len(msg) < 48:
         return nil
-    end
     
     let re_pub = slice(msg, 0, 32)
     hs["re"] = re_pub
@@ -206,7 +192,6 @@ proc read_message_2(hs, msg):
     let payload = decrypt_and_hash(hs, encrypted_payload)
     if payload == nil:
         return nil
-    end
     
     return {"payload": payload}
 
@@ -219,5 +204,4 @@ proc split_handshake(hs):
         let temp_k = send_key
         send_key = recv_key
         recv_key = temp_k
-    end
     return {"send": send_key, "recv": recv_key}

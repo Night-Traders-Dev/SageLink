@@ -48,7 +48,6 @@ let read1 = noise_ik.read_message_1(bob_hs, msg1)
 if read1 == nil:
     print " [FAIL] Bob failed to parse message 1"
     sys.exit(1)
-end
 
 let parsed_payload_1 = ""
 for i in range(len(read1["payload"])):
@@ -59,13 +58,11 @@ if parsed_payload_1 == payload_1:
     print " [PASS] Payload 1 decrypted successfully"
 else:
     print " [FAIL] Payload 1 mismatch"
-end
 
 if bytes_equal(read1["rs"], alice_keys["pub"]):
     print " [PASS] Bob correctly identified Alice's static public key"
 else:
     print " [FAIL] Static key mismatch"
-end
 
 # Message 2
 print "Writing message 2 (Bob -> Alice)..."
@@ -78,7 +75,6 @@ let read2 = noise_ik.read_message_2(alice_hs, msg2)
 if read2 == nil:
     print " [FAIL] Alice failed to parse message 2"
     sys.exit(1)
-end
 
 let parsed_payload_2 = ""
 for i in range(len(read2["payload"])):
@@ -89,7 +85,6 @@ if parsed_payload_2 == payload_2:
     print " [PASS] Payload 2 decrypted successfully"
 else:
     print " [FAIL] Payload 2 mismatch"
-end
 
 # Split keys
 print "Splitting handshake keys..."
@@ -110,13 +105,11 @@ if bytes_equal(alice_transport["send"], bob_transport["recv"]):
     print " [PASS] Alice send key matches Bob recv key"
 else:
     print " [FAIL] Key mismatch (A_send vs B_recv)"
-end
 
 if bytes_equal(alice_transport["recv"], bob_transport["send"]):
     print " [PASS] Alice recv key matches Bob send key"
 else:
     print " [FAIL] Key mismatch (A_recv vs B_send)"
-end
 
 # Test transport data frame encryption
 print "Testing post-handshake transport encryption..."
@@ -137,10 +130,8 @@ if dec_pt != nil:
         print " [PASS] Transport encryption and decryption verified"
     else:
         print " [FAIL] Transport plaintext mismatch"
-    end
 else:
     print " [FAIL] Transport decryption failed"
-end
 
 print "========================================="
 print "Handshake tests finished."

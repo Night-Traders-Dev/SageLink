@@ -57,23 +57,16 @@ proc zero_key(key):
     if key != nil:
         for i in range(len(key)):
             key[i] = 0
-        end
-    end
-end
 
 proc is_rekey_message(plaintext):
     if len(plaintext) < 3:
         return false
-    end
     let msg_type = plaintext[0]
     let stream_id = plaintext[1] * 256 + plaintext[2]
     if stream_id == 0:
         if msg_type == REKEY_MSG1 or msg_type == REKEY_MSG2:
             return true
-        end
-    end
     return false
-end
 
 # Send a raw encrypted frame
 proc mux_send_frame(mux, plaintext):
@@ -87,10 +80,7 @@ proc mux_send_frame(mux, plaintext):
             thread.unlock(mux["rekey_mutex"])
             if not rekeying:
                 break
-            end
             thread.sleep(0.005)
-        end
-    end
 
     thread.lock(mux["write_mutex"])
     let counter = mux["send_counter"]
@@ -104,18 +94,13 @@ proc mux_send_frame(mux, plaintext):
         let should_rekey = (mux["send_counter"] >= mux["rekey_threshold"]) and not mux["rekeying"]
         if should_rekey:
             mux["rekeying"] = true
-        end
         thread.unlock(mux["rekey_mutex"])
         
         if should_rekey:
             proc run_rekey_async():
                 trigger_rekey(mux)
-            end
             thread.spawn(run_rekey_async)
-        end
-    end
     return ok
-end
 
 proc trigger_rekey(mux):
     print "Initiator: Triggering rekey process..."
@@ -123,7 +108,7 @@ proc trigger_rekey(mux):
     mux["rekey_hs"] = hs
     
     let msg1 = noise_ik.write_message_1(hs, "rekey_msg1")
-    mux_send_msg(mux, 0, REKEY_MSG1, utils.bytes(msg1))
+    mux_send_msg(mux, 0, REKEY_MSG1, utils.to_bytes(msg1))
     
     # The reader thread will receive REKEY_MSG2, process it, and clear mux["rekeying"] to false.
     while true:
@@ -132,11 +117,8 @@ proc trigger_rekey(mux):
         thread.unlock(mux["rekey_mutex"])
         if not rekeying:
             break
-        end
         thread.sleep(0.005)
-    end
     print "Initiator: Rekey handshake finished and verified."
-end
 
 proc handle_rekey_responder(mux, payload_bytes):
     thread.lock(mux["rekey_mutex"])
@@ -153,10 +135,9 @@ proc handle_rekey_responder(mux, payload_bytes):
         mux["rekeying"] = false
         thread.unlock(mux["rekey_mutex"])
         return
-    end
     
     let msg2 = noise_ik.write_message_2(hs, "rekey_msg2")
-    mux_send_msg(mux, 0, REKEY_MSG2, utils.bytes(msg2))
+    mux_send_msg(mux, 0, REKEY_MSG2, utils.to_bytes(msg2))
     
     let new_keys = noise_ik.split_handshake(hs)
     let old_send = mux["send_key"]
@@ -177,13 +158,12 @@ proc handle_rekey_responder(mux, payload_bytes):
     thread.lock(mux["rekey_mutex"])
     mux["rekeying"] = false
     thread.unlock(mux["rekey_mutex"])
-end
 
 # Pack and send a message on a stream
 proc mux_send_msg(mux, stream_id, msg_type, payload):
     # Pack msg_type (1B) + stream_id (2B) + payload
     let msg = [msg_type, (stream_id >> 8) & 255, stream_id & 255] + payload
-    return mux_send_frame(mux, utils.bytes(msg))
+    return mux_send_frame(mux, utils.to_bytes(msg))
 
 proc create_stream(stream_id, service_type):
     let s = {}
@@ -212,26 +192,22 @@ proc mux_reader_loop(mux):
                     thread.lock(s["mutex"])
                     s["closed"] = true
                     thread.unlock(s["mutex"])
-                end
-            end
             thread.unlock(mux["streams_mutex"])
 
             thread.lock(mux["rekey_mutex"])
             mux["rekeying"] = false
             thread.unlock(mux["rekey_mutex"])
             break
-        end
         
         let plaintext = frame["plaintext"]
         if len(plaintext) < 3:
             continue
-        end
         
         let msg_type = plaintext[0]
         let stream_id = plaintext[1] * 256 + plaintext[2]
         
         # Extract payload
-        let payload_bytes = utils.bytes(slice(plaintext, 3, len(plaintext)))
+        let payload_bytes = utils.to_bytes(slice(plaintext, 3, len(plaintext)))
         
         if stream_id == 0:
             if msg_type == REKEY_MSG1:
@@ -261,16 +237,11 @@ proc mux_reader_loop(mux):
                             print "Initiator: Rekey completed successfully!"
                         else:
                             print "Initiator: Rekey failed to parse Msg 2"
-                        end
                         mux["rekey_hs"] = nil
                         thread.lock(mux["rekey_mutex"])
                         mux["rekeying"] = false
                         thread.unlock(mux["rekey_mutex"])
-                    end
-                end
-            end
             continue
-        end
         
         thread.lock(mux["streams_mutex"])
         let stream = mux["streams"][str(stream_id)]
@@ -289,16 +260,13 @@ proc mux_reader_loop(mux):
                 else:
                     # Queue full: drop message and log warning (backpressure)
                     print "Warning: Stream queue full, dropping message (stream " + str(stream_id) + ")"
-                end
                 thread.unlock(stream["mutex"])
-            end
         else:
             # New incoming stream open request (for responder side)
             if msg_type == CHAN_OPEN:
                 let service_type = ""
                 for i in range(len(payload_bytes)):
                     service_type = service_type + chr(payload_bytes[i])
-                end
                 
                 let new_s = create_stream(stream_id, service_type)
                 thread.lock(mux["streams_mutex"])
@@ -308,18 +276,12 @@ proc mux_reader_loop(mux):
                 if mux["incoming_callback"] != nil:
                     proc run_cb():
                         mux["incoming_callback"](mux, new_s)
-                    end
                     thread.spawn(run_cb)
-                end
-            end
-        end
-    end
 
 proc start_mux_reader(mux, incoming_callback = nil):
     mux["incoming_callback"] = incoming_callback
     proc run_reader():
         mux_reader_loop(mux)
-    end
     mux["reader_thread"] = thread.spawn(run_reader)
 
 # Client opens a stream
@@ -332,18 +294,14 @@ proc mux_open_stream(mux, service_type):
         stream_id = stream_id + 1
         if stream_id >= 65536:
             stream_id = 1
-        end
         attempts = attempts + 1
         if attempts >= 65536:
             thread.unlock(mux["streams_mutex"])
             return nil
-        end
-    end
 
     mux["next_stream_id"] = stream_id + 1
     if mux["next_stream_id"] >= 65536:
         mux["next_stream_id"] = 1
-    end
 
     let s = create_stream(stream_id, service_type)
     mux["streams"][str(stream_id)] = s
@@ -353,8 +311,7 @@ proc mux_open_stream(mux, service_type):
     let payload = []
     for i in range(len(service_type)):
         push(payload, ord(service_type[i]))
-    end
-    mux_send_msg(mux, stream_id, CHAN_OPEN, utils.bytes(payload))
+    mux_send_msg(mux, stream_id, CHAN_OPEN, utils.to_bytes(payload))
     return s
 
 # Read next message from a stream (blocks until message arrives or stream is closed)
@@ -370,21 +327,16 @@ proc stream_read_msg(s):
                 let new_q = []
                 for i in range(s["queue_head"], len(s["queue"])):
                     push(new_q, s["queue"][i])
-                end
                 s["queue"] = new_q
                 s["queue_head"] = 0
-            end
 
             thread.unlock(s["mutex"])
             return msg
-        end
         if s["closed"]:
             thread.unlock(s["mutex"])
             return nil
-        end
         thread.unlock(s["mutex"])
         thread.sleep(0.005)
-    end
 
 # Write message to a stream
 proc stream_write_msg(mux, s, msg_type, payload):
