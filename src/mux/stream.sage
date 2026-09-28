@@ -162,7 +162,16 @@ proc handle_rekey_responder(mux, payload_bytes):
 # Pack and send a message on a stream
 proc mux_send_msg(mux, stream_id, msg_type, payload):
     # Pack msg_type (1B) + stream_id (2B) + payload
-    let msg = [msg_type, (stream_id >> 8) & 255, stream_id & 255] + payload
+    # payload arrives as a bytes object, and `+` does not mix an array with a
+    # bytes value -- it raises "Operands must be numbers or strings (array +
+    # bytes)". Because this runs on a spawned thread the exception killed the
+    # thread silently and the caller waited forever for a reply, which is why the
+    # integration test hung with no error at all. Normalise the payload to a list
+    # first so the header and body are assembled as one array.
+    let body = utils.to_list(payload)
+    if body == nil:
+        body = []
+    let msg = [msg_type, (stream_id >> 8) & 255, stream_id & 255] + body
     return mux_send_frame(mux, utils.to_bytes(msg))
 
 proc create_stream(stream_id, service_type):
