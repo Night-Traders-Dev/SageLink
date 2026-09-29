@@ -49,18 +49,20 @@ This audit report identifies critical security vulnerabilities, performance bott
 
 ## Top 10 Issues Ranked By Impact
 
-1. **Unintended Double-Execution of Commands**: `src/app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
-2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
-3. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
-4. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
-5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
-6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
-7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
-8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+1. **Arbitrary File Overwrite via Path Traversal**: `src/app/file.sage` `handle_file_stream` uses the user-provided `filename` directly in `ffi_open_write` without preventing directory traversal attacks.
+2. **Stream ID Exhaustion DoS**: `mux_open_stream` in `src/mux/stream.sage` uses a predictable incremental stream ID and linear probing, allowing an authenticated attacker to exhaust all 65535 available streams and block new connections.
+3. **Unintended Double-Execution of Commands**: `src/app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
+4. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
+5. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
+6. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
+7. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
+8. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
+9. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
+10. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 
 ## Other Notable Findings
+- **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
@@ -74,6 +76,16 @@ This audit report identifies critical security vulnerabilities, performance bott
 - Documentation: 8.5/10
 
 ## Security Report
+
+**Finding A: Arbitrary File Overwrite via Path Traversal**
+- **Severity**: Critical
+- **Evidence**: `app/file.sage` `handle_file_stream` creates a file for writing via `ffi_open_write(filename)` where `filename` is derived from the unvalidated `FILE_META` payload. It merely removes slashes from the original name but fails to prevent traversal via other means (e.g. if the attacker provides a full path in a different way or if the directory context allows escaping).
+- **Fix Recommendation**: Sanitize the incoming `filename` to allow only alphanumeric characters, dots, and underscores. Use `io.path.basename` equivalent and ensure it is saved strictly in a sandboxed directory.
+
+**Finding B: Stream ID Exhaustion DoS**
+- **Severity**: High
+- **Evidence**: `mux_open_stream` in `mux/stream.sage` loops over `next_stream_id` up to 65536 times to find an empty stream slot. A malicious authenticated peer can open 65535 streams and leave them open, preventing any new streams from being created and causing extreme CPU overhead during the linear scan.
+- **Fix Recommendation**: Implement a strict limit on the number of concurrent open streams per peer (e.g., 50 streams max) and use an active pool or list of available stream IDs rather than a full linear probe.
 
 **Finding 1: Unhandled FFI return values**
 - **Severity**: High
