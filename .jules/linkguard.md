@@ -18,6 +18,9 @@
 - **DoS via Slowloris**: The application lacks network timeouts during handshakes and stream reading, making it susceptible to connection stagnation attacks.
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
+- **Arbitrary File Overwrite via Path Traversal**: Unvalidated filenames received from peers in `FILE_META` messages can be used directly in file creation functions, leading to path traversal attacks (e.g. `src/app/file.sage`).
+- **Stream ID Exhaustion DoS**: The multiplexer (e.g. `src/mux/stream.sage`) uses a predictable sequence for `next_stream_id` and linear probing, allowing an authenticated peer to open streams until no more IDs are available, locking up new connections and wasting CPU cycles.
+
 ## Performance bottlenecks
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
 - **Array Operations Overhead**: O(N^2) or high O(N) array operations (list copying and string concatenation) create significant overhead, especially when handling byte arrays in transport framing or UUID generation.
