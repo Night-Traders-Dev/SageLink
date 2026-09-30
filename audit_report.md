@@ -52,25 +52,28 @@ This audit report identifies critical security vulnerabilities, performance bott
 1. **Unintended Double-Execution of Commands**: `src/app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
 2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
 3. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
-4. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
-5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
-6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
-7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
-8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+4. **Memory Leaks via Unfreed FFI Buffers**: `src/app/file.sage` fails to free `read_buf` in `send_file`, leaking 16KB on every transfer, with early return leaks in `src/app/shell.sage`.
+5. **Hardcoded st_size Offset in fstat**: `src/app/file.sage` hardcodes the `st_size` offset to 48 bytes, breaking cross-platform compatibility.
+6. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
+7. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
+8. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
+9. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
+10. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 
 ## Other Notable Findings
+- **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+- **Use-After-Close Race Condition in PTY stream**: `src/app/shell.sage` closes `master_fd` in `handle_shell_stream` while the reader thread may still concurrently read from it.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
+- Security: 6.1/10
 - Performance: 5.8/10
-- Reliability: 5.5/10
-- Maintainability: 7.0/10
+- Reliability: 5.2/10
+- Maintainability: 6.8/10
 - Documentation: 8.5/10
 
 ## Security Report
@@ -115,6 +118,16 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
 
+**Finding 9: Memory Leaks via Unfreed FFI Buffers**
+- **Severity**: High
+- **Evidence**: `app/file.sage` allocates `read_buf` using `mem_alloc(16384)` inside `send_file`, but fails to free it before returning in several places (e.g. on early failures and upon successful completion). Similarly, `app/shell.sage` has early returns that skip `mem_free`.
+- **Fix Recommendation**: Ensure `mem_free` is called on all allocated memory buffers before returning from the function or exiting.
+
+**Finding 10: Hardcoded st_size Offset in fstat**
+- **Severity**: High
+- **Evidence**: `src/app/file.sage` reads the file size from the `stat` struct using `mem_read(stat_buf, 48, "u64")`. The `st_size` offset is 48 bytes on Linux x86_64, but varies on other platforms like macOS or 32-bit architectures.
+- **Fix Recommendation**: Replace the hardcoded offset with a cross-platform approach, such as exposing the file size directly through a safe SageLang standard library function or writing a tiny C wrapper.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -156,3 +169,4 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
 - **Network Timeout Tests**: Integration tests do not validate the system's behavior against stalled or slow network connections.
 - **Cross-Compilation Verification**: Dedicated integration test runners for `aarch64` and `rv64` architectures are not enforced in the standard CI pipeline.
+- **Use-After-Close Race Conditions**: Missing tests to prevent a race condition in `src/app/shell.sage` where `master_fd` is closed while the reader thread is potentially still reading from it.
