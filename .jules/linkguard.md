@@ -20,6 +20,7 @@
 
 ## Performance bottlenecks
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
+- **Double File I/O for SHA-256**: The FILE service reads the target file completely from disk to compute a hash before streaming the chunks, effectively halving file transfer speeds through redundant I/O operations.
 - **Array Operations Overhead**: O(N^2) or high O(N) array operations (list copying and string concatenation) create significant overhead, especially when handling byte arrays in transport framing or UUID generation.
 - **Busy Polling**: Tight polling loops relying heavily on `thread.sleep(0.005)` (e.g., `stream_read_msg` in `src/mux/stream.sage`) for stream reading and rekeying synchronization waste CPU cycles.
 - **Synchronous Cryptography**: Heavy Diffie-Hellman (DH) computations are executed synchronously on the main reader loops, stalling multiplexing throughput.
@@ -31,10 +32,12 @@
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.
 - **Hardcoded Memory Offsets**: Relying on fixed C struct offsets (e.g., `winsize` offset calculations) completely breaks cross-platform compatibility across disparate architectures and OS kernels.
+- **Hardcoded Struct Offsets**: The FILE service uses a hardcoded `st_size` offset (48 bytes) for `fstat`, breaking execution on non-x86_64 architectures (e.g., aarch64, rv64) due to memory layout differences.
 - **Unbounded Multiplexing Queues**: Multiplexer queues bound the element count but fail to restrict the aggregate byte size, leading to unpredictable memory usage.
 
 ## Reliability risks
 - **Incomplete Write Handling**: `write()` syscalls via FFI lack validation for partial writes, risking truncated data streams during heavy loads.
+- **Base64 Decode Panics**: Unsafe dictionary lookups in `b64_decode` throw fatal exceptions upon encountering invalid, non-whitespace characters, leading to unexpected application crashes.
 - **File Descriptor Leaks**: PTY master/slave manipulation directly via FFI easily leaks file descriptors if mid-setup error pathways are triggered without cleanup.
 - **FFI IPC Instability**: Spawning shells and interacting with PTYs via direct `libc` FFI calls (e.g. `src/app/shell.sage`) bypasses standard process boundaries, introducing silent truncation risks on partial writes.
 - **Synchronization Deadlocks**: The absence of strict timeouts on blocking `while true` synchronization structures (e.g., awaiting rekeying status) risks indefinite hangs.
