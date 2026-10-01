@@ -28,6 +28,7 @@
 ```
 *Note: High reliance on IPC via FFI (e.g. `ffi_call(libc, "system")` in `src/app/shell.sage`) bypassing standard SageLang boundaries.*
 *Note on Memory Limits: The FILE service (`src/app/file.sage`) enforces a strict 16384-byte read buffer limit during chunked file processing.*
+*Note on I/O Overhead: The FILE service performs a complete disk read to compute SHA-256 before streaming, doubling disk I/O.*
 
 **External Dependencies:**
 - `sagelang-lib-crypto` (loaded as `crypto` submodule for AES/ChaCha/Hash ops)
@@ -45,7 +46,7 @@
 
 ## Executive Summary
 
-This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks. The FILE service incurs severe performance penalties by performing double disk reads to compute SHA-256 hashes sequentially before streaming. Hardcoded memory bounds (like the 16384-byte limit) act as performance bottlenecks. Additionally, hardcoded C struct offsets (e.g., `st_size` in `fstat`) and panic-inducing input processing vulnerabilities highlight stability concerns. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -57,19 +58,22 @@ This audit report identifies critical security vulnerabilities, performance bott
 6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+9. **Hardcoded fstat Struct Offset**: `src/app/file.sage` hardcodes the `st_size` offset (48 bytes) for `fstat`, breaking execution entirely on non-x86_64 architectures (e.g., aarch64, rv64) due to structure layout differences.
+10. **Double Disk I/O Overhead in FILE Service**: `src/app/file.sage` sequentially reads the entire file from disk to compute a SHA-256 hash before re-opening it to stream chunks, effectively halving maximum theoretical file transfer performance.
 
 ## Other Notable Findings
+- **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+- **Base64 Decode Panics**: `b64_decode` in `src/cli/sagelink.sage` uses unsafe dictionary lookups for non-whitespace invalid characters, which throws a fatal exception.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
-- Performance: 5.8/10
-- Reliability: 5.5/10
+- Security: 6.2/10
+- Performance: 5.5/10
+- Reliability: 5.2/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
 
@@ -115,6 +119,13 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
 
+
+
+**Finding 9: Base64 Decode Panics**
+- **Severity**: Low
+- **Evidence**: `b64_decode` in `src/cli/sagelink.sage` maps characters using `char_map[c1]`. If `c1` is an invalid base64 character (not skipped by whitespace checks), the dictionary lookup fails and crashes the application.
+- **Fix Recommendation**: Implement bounds checking or safe dictionary accesses (e.g., verifying the character exists in `char_map`) before attempting to retrieve its index.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -124,12 +135,14 @@ This audit report identifies critical security vulnerabilities, performance bott
 4. **Delayed Queue Compaction:** Stream queues only compact when `queue_head >= 1024`, causing memory retention spikes during heavy traffic.
 5. **Inefficient Path Resolution:** Missing explicit SAGE_PATH propagation causes redundant directory traversals when resolving submodules.
 6. **Hardcoded Memory Bounds**: The `16384` byte read buffer in `src/app/file.sage` limits theoretical max throughput.
+7. **Double File I/O for SHA-256**: The FILE service completely hashes the local file in one sequential pass before initiating the stream, reading the entire file twice.
 
 **Estimated Impact:**
 - Noticeable memory copying overhead and frequent garbage collection pauses during large FILE transfers.
 - Severe concurrency bottlenecks when multiple peers rekey simultaneously.
 - Consistently high idle CPU utilization, severely impacting battery life on embedded devices.
 - Potential file transfer speed bottlenecks on high-bandwidth links due to strict chunking limits.
+- Double disk I/O significantly slows down transmission of large files over the network.
 
 **Recommended Fixes:**
 - Preallocate byte arrays and utilize memory slices/views rather than iterative pushing and string concatenation.
@@ -137,6 +150,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 - Replace sleep-based polling with blocking condition variables or I/O signaling constructs.
 - Utilize circular buffers (ring buffers) for stream queues to completely eliminate manual array compaction.
 - Consider dynamically scaling chunk sizes or optimizing I/O buffers for FILE transfers.
+- Compute the SHA-256 hash concurrently during chunk streaming, or utilize memory-mapped files (mmap) to avoid double I/O buffering.
 
 ## Functionality Report
 
@@ -149,6 +163,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **CMD Service Side-Effects**: Remote commands execute twice. `ffi_run_command(cmd)` executes the command via `system()` to capture the exit code, and then `sys.shell_exec(cmd)` executes it again to capture stdout.
 - **SHELL Service Struct Layouts**: Terminal resizing logic manually builds a `winsize` struct by hardcoding 8 bytes. Padding and sizing differ heavily across architectures (e.g., Linux vs macOS).
 - **CLI Keygen Execution**: Key generation fails because `sys.shell_exec` actively blocks unsafe characters like `&&`, breaking the CLI's atomic key rename (`chmod 600 ... && mv ...`).
+- **fstat Cross-Platform Compatibility**: `src/app/file.sage` hardcodes the `st_size` offset (48 bytes) for Linux x86_64 `fstat`. Executing file transfers on other architectures reads incorrect file sizes, corrupting the transfer.
 
 **Missing Coverage:**
 - **Partial Write Handling**: `src/app/shell.sage` doesn't handle short writes when writing to the PTY master, risking truncated data.
@@ -156,3 +171,4 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
 - **Network Timeout Tests**: Integration tests do not validate the system's behavior against stalled or slow network connections.
 - **Cross-Compilation Verification**: Dedicated integration test runners for `aarch64` and `rv64` architectures are not enforced in the standard CI pipeline.
+- **Malformed Base64 Handling**: No test coverage exists for malformed base64 input parsing in the CLI utilities.
