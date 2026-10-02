@@ -29,6 +29,8 @@
 *Note: High reliance on IPC via FFI (e.g. `ffi_call(libc, "system")` in `src/app/shell.sage`) bypassing standard SageLang boundaries.*
 *Note on Memory Limits: The FILE service (`src/app/file.sage`) enforces a strict 16384-byte read buffer limit during chunked file processing.*
 
+*Note on File I/O: The FILE service (`src/app/file.sage`) writes directly to disk but lacks cleanup handlers for aborted streams, risking storage depletion.*
+
 **External Dependencies:**
 - `sagelang-lib-crypto` (loaded as `crypto` submodule for AES/ChaCha/Hash ops)
 - `sagelang-lib-gc` (loaded as `sagelang-lib-gc` submodule for memory management)
@@ -45,7 +47,7 @@
 
 ## Executive Summary
 
-This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete disk cleanup on failed file transfers leads to disk space exhaustion, and incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -58,9 +60,10 @@ This audit report identifies critical security vulnerabilities, performance bott
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+10. **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers in `src/app/file.sage` leads to gradual storage depletion.
 
 ## Other Notable Findings
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
@@ -69,7 +72,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 
 - Security: 6.3/10
 - Performance: 5.8/10
-- Reliability: 5.5/10
+- Reliability: 5.4/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
 
@@ -115,6 +118,12 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
 
+
+**Finding 9: Disk Space Exhaustion**
+- **Severity**: Medium
+- **Evidence**: In `src/app/file.sage`, if a file transfer is aborted and `bytes_written < file_size`, the file descriptor is closed but `io.remove(filename)` is not called, leaving the incomplete file on disk.
+- **Fix Recommendation**: Ensure `io.remove(filename)` is invoked in a cleanup block whenever a file transfer fails or is prematurely terminated.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -137,6 +146,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 - Replace sleep-based polling with blocking condition variables or I/O signaling constructs.
 - Utilize circular buffers (ring buffers) for stream queues to completely eliminate manual array compaction.
 - Consider dynamically scaling chunk sizes or optimizing I/O buffers for FILE transfers.
+- Implement asynchronous cleanup for temporary files to prevent blocking the main thread.
 
 ## Functionality Report
 
@@ -156,3 +166,4 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
 - **Network Timeout Tests**: Integration tests do not validate the system's behavior against stalled or slow network connections.
 - **Cross-Compilation Verification**: Dedicated integration test runners for `aarch64` and `rv64` architectures are not enforced in the standard CI pipeline.
+- **Aborted Transfer Recovery**: Missing tests to verify that interrupted file transfers properly clean up temporary artifacts on disk.
