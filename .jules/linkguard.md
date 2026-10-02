@@ -17,6 +17,7 @@
 - **Unhandled FFI Returns**: Neglecting to validate FFI return values (e.g., ignoring `ptsname_r` errors) opens vectors for out-of-bounds (OOB) memory reads on uninitialized buffers.
 - **DoS via Slowloris**: The application lacks network timeouts during handshakes and stream reading, making it susceptible to connection stagnation attacks.
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
+- **Arbitrary File Overwrite**: The FILE service safely strips directory separators but writes incoming files directly to the current working directory without validation, allowing an authenticated peer to overwrite critical files like `peers.toml` or `identity.key`.
 
 ## Performance bottlenecks
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
