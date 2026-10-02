@@ -1,6 +1,7 @@
 # LinkGuard Journal
 
 ## Security patterns
+- The FILE service explicitly implements sliding-window flow control using a 64KB window (`let window_size = 65536`) and 16KB chunk sizes to prevent unbounded memory retention during transfers.
 - Hand-rolled cryptographic primitives are strictly utilized without external FFI dependencies, reducing supply chain attack surface.
 - Sliding 64-entry window replay protection effectively guarantees monotonic counter progression.
 - Noise_IK handshakes (X25519 + ChaCha20-Poly1305 + BLAKE2s) ensure mutually authenticated and encrypted sessions.
@@ -27,6 +28,7 @@
 - **Inefficient Stream Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 
 ## Architectural weaknesses
+- The CMD service does not support output streaming; it currently waits for the `ffi_run_command` and `shell_exec` functions to complete before capturing and returning the exit code and output simultaneously, potentially causing timeouts on long-running commands.
 - **FFI Boundary Bypassing**: Heavy reliance on direct IPC via FFI (e.g., `ffi_call(libc, "system")` in `src/app/shell.sage`) bypasses standard SageLang sandbox limits and type safety boundaries, elevating risks of native crashes.
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.

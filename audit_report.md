@@ -3,6 +3,7 @@
 ## Architecture Map
 
 **Major Subsystems:**
+- Framing Layer (`src/transport/framing.sage`): Handles length-prefixed binary frames and ChaCha20-Poly1305 AEAD encryption.
 - CMD Service (`src/app/cmd.sage`): Handles remote command execution and exit code retrieval.
 - FILE Service (`src/app/file.sage`): Handles chunked file transfers and SHA-256 integrity checks.
 - SHELL Service (`src/app/shell.sage`): Manages interactive PTY sessions and terminal resizing.
@@ -45,6 +46,8 @@
 
 ## Executive Summary
 
+- Validated functionality of FILE transfer sliding window (64KB).
+- Identified timeout risks in CMD service execution.
 This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
@@ -61,17 +64,18 @@ This audit report identifies critical security vulnerabilities, performance bott
 10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 
 ## Other Notable Findings
+- **CMD Service Timeouts**: `src/app/cmd.sage` waits for complete execution before returning results, meaning commands taking longer than socket timeouts may silently drop the connection.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
-- Performance: 5.8/10
-- Reliability: 5.5/10
-- Maintainability: 7.0/10
-- Documentation: 8.5/10
+- Security: 6.4/10
+- Performance: 5.9/10
+- Reliability: 5.6/10
+- Maintainability: 7.1/10
+- Documentation: 8.6/10
 
 ## Security Report
 
@@ -151,6 +155,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **CLI Keygen Execution**: Key generation fails because `sys.shell_exec` actively blocks unsafe characters like `&&`, breaking the CLI's atomic key rename (`chmod 600 ... && mv ...`).
 
 **Missing Coverage:**
+- **CMD Output Streaming**: `src/app/cmd.sage` does not support real-time output streaming for long-running remote commands.
 - **Partial Write Handling**: `src/app/shell.sage` doesn't handle short writes when writing to the PTY master, risking truncated data.
 - **Double-Execution Tests**: Missing test coverage in `src/app/cmd.sage` to assert remote commands only execute side-effects once.
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
