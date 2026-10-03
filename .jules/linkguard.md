@@ -8,6 +8,7 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Short Write Truncation Risks**: `ffi_write` in `src/app/file.sage` and `write` in `src/app/shell.sage` do not handle short writes, leading to silently truncated files or missing terminal output under heavy load.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
@@ -19,6 +20,7 @@
 - **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
 ## Performance bottlenecks
+- **Inefficient Stream ID Resolution**: Linear probing for available stream IDs up to 65536 iterations causes a bottleneck when opening multiplexed streams under load.
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
 - **Array Operations Overhead**: O(N^2) or high O(N) array operations (list copying and string concatenation) create significant overhead, especially when handling byte arrays in transport framing or UUID generation.
 - **Busy Polling**: Tight polling loops relying heavily on `thread.sleep(0.005)` (e.g., `stream_read_msg` in `src/mux/stream.sage`) for stream reading and rekeying synchronization waste CPU cycles.

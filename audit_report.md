@@ -58,18 +58,20 @@ This audit report identifies critical security vulnerabilities, performance bott
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+10. **Short Write Data Truncation**: Missing retry logic on short writes during FFI `write` calls in both the FILE and SHELL services risks severe, silent data corruption and missing output under load.
 
 ## Other Notable Findings
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+- **Inefficient Stream ID Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
-- Performance: 5.8/10
-- Reliability: 5.5/10
+- Security: 6.2/10
+- Performance: 5.6/10
+- Reliability: 5.3/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
 
@@ -115,6 +117,12 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
 
+
+**Finding 9: Short Write Data Truncation**
+- **Severity**: High
+- **Evidence**: `ffi_write` in `src/app/file.sage` and `write` in `src/app/shell.sage` check if written bytes match expected length, but abort or truncate instead of retrying short writes.
+- **Fix Recommendation**: Implement loops around FFI `write` calls to ensure all bytes are fully written, handling `EAGAIN` and short returns robustly.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -124,12 +132,14 @@ This audit report identifies critical security vulnerabilities, performance bott
 4. **Delayed Queue Compaction:** Stream queues only compact when `queue_head >= 1024`, causing memory retention spikes during heavy traffic.
 5. **Inefficient Path Resolution:** Missing explicit SAGE_PATH propagation causes redundant directory traversals when resolving submodules.
 6. **Hardcoded Memory Bounds**: The `16384` byte read buffer in `src/app/file.sage` limits theoretical max throughput.
+7. **Inefficient Stream ID Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 
 **Estimated Impact:**
 - Noticeable memory copying overhead and frequent garbage collection pauses during large FILE transfers.
 - Severe concurrency bottlenecks when multiple peers rekey simultaneously.
 - Consistently high idle CPU utilization, severely impacting battery life on embedded devices.
 - Potential file transfer speed bottlenecks on high-bandwidth links due to strict chunking limits.
+- Significant latency spikes when opening new streams under heavy multiplexing load.
 
 **Recommended Fixes:**
 - Preallocate byte arrays and utilize memory slices/views rather than iterative pushing and string concatenation.
@@ -137,6 +147,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 - Replace sleep-based polling with blocking condition variables or I/O signaling constructs.
 - Utilize circular buffers (ring buffers) for stream queues to completely eliminate manual array compaction.
 - Consider dynamically scaling chunk sizes or optimizing I/O buffers for FILE transfers.
+- Implement a more efficient data structure (e.g., a hash map or free list) to resolve available stream IDs in O(1) time rather than O(N) linear probing.
 
 ## Functionality Report
 
