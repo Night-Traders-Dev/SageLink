@@ -8,6 +8,7 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Timing Attack Susceptibility**: The authentication mechanism (`keys_equal` in `src/cli/sagelink.sage`) iterates byte-by-byte and returns early on the first mismatch. This exposes the system to timing attacks when verifying pinned static public keys during authentication.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
