@@ -11,6 +11,7 @@
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
+- **Unbounded Authenticated Rekeying DoS**: The multiplexer unconditionally spawns threads and executes expensive Diffie-Hellman operations for every incoming `REKEY_MSG1` without debouncing, exposing the server to resource exhaustion by an authenticated peer.
 - **DoS via Memory Exhaustion**: Lack of bounding on memory allocations (accepting payload sizes up to 1MB pre-authentication) and unbounded thread spawning expose the application to denial of service.
 - **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size, risking silent memory exhaustion.
 - **DoS via CPU Exhaustion**: O(N^2) string concatenation when parsing large `CHAN_OPEN` payloads authenticated by malicious peers.
