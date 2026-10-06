@@ -9,6 +9,7 @@
 - Stream Multiplexing (`src/mux/stream.sage`): Provides stream isolation and flow control.
 - Transport Encryption (`src/transport/framing.sage`, `replay_window.sage`): ChaCha20-Poly1305 AEAD framing.
 - Handshake (`src/handshake/noise_ik.sage`): Noise_IK protocol for mutual authentication.
+- Connection Manager (`src/cli/sagelink.sage`): Tracks active connections and imposes limits.
 - Command Line Interface (`src/cli/sagelink.sage`): Entry point for daemon and client connections.
 - Utilities & Helpers (`src/utils.sage`): Common data transformation functions.
 
@@ -51,27 +52,30 @@ This audit report identifies critical security vulnerabilities, performance bott
 
 1. **Unintended Double-Execution of Commands**: `src/app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
 2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
-3. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
-4. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
-5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
-6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
-7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
-8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+3. **Global 10-Connection Limit Rejection**: `MAX_UNAUTH_CONNECTIONS = 10` limits *all* active connections.
+4. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
+5. **Disk Space Exhaustion via Aborted FILE Transfers**: Incomplete transfers leave partial files indefinitely when `chunk_msg == nil`.
+6. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
+7. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
+8. **FILE Service Directory Path Stripping**: Remote path directories are ignored via `if c == "/" or c == "\": filename = ""`.
+9. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
+10. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 
 ## Other Notable Findings
+- **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
+- **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
-- Performance: 5.8/10
-- Reliability: 5.5/10
-- Maintainability: 7.0/10
-- Documentation: 8.5/10
+- Security: 6.1/10
+- Performance: 5.7/10
+- Reliability: 4.8/10
+- Maintainability: 6.8/10
+- Documentation: 8.6/10
 
 ## Security Report
 
@@ -115,6 +119,11 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
 
+**Finding 9: Disk Space Exhaustion via Aborted FILE Transfers**
+- **Severity**: High
+- **Evidence**: `src/app/file.sage` fails to clean up on `chunk_msg == nil`.
+- **Fix Recommendation**: Add cleanup hook on disconnect.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -124,6 +133,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 4. **Delayed Queue Compaction:** Stream queues only compact when `queue_head >= 1024`, causing memory retention spikes during heavy traffic.
 5. **Inefficient Path Resolution:** Missing explicit SAGE_PATH propagation causes redundant directory traversals when resolving submodules.
 6. **Hardcoded Memory Bounds**: The `16384` byte read buffer in `src/app/file.sage` limits theoretical max throughput.
+7. **Connection Management Contention:** The `conn_mutex` in `src/cli/sagelink.sage` limits scale.
 
 **Estimated Impact:**
 - Noticeable memory copying overhead and frequent garbage collection pauses during large FILE transfers.
@@ -146,11 +156,14 @@ This audit report identifies critical security vulnerabilities, performance bott
 - 64-entry sliding bitmap effectively mitigates packet replay attacks.
 
 **Broken Features:**
+- **FILE Service Path Stripping**: remote path directories are ignored via `if c == "/" or c == "\\": filename = ""`.
+- **Global Connection Bottleneck**: `MAX_UNAUTH_CONNECTIONS = 10` limits all active connections.
 - **CMD Service Side-Effects**: Remote commands execute twice. `ffi_run_command(cmd)` executes the command via `system()` to capture the exit code, and then `sys.shell_exec(cmd)` executes it again to capture stdout.
 - **SHELL Service Struct Layouts**: Terminal resizing logic manually builds a `winsize` struct by hardcoding 8 bytes. Padding and sizing differ heavily across architectures (e.g., Linux vs macOS).
 - **CLI Keygen Execution**: Key generation fails because `sys.shell_exec` actively blocks unsafe characters like `&&`, breaking the CLI's atomic key rename (`chmod 600 ... && mv ...`).
 
 **Missing Coverage:**
+- **File cleanup tests on aborted transfers**: No tests verify that partially downloaded files are deleted if the connection drops.
 - **Partial Write Handling**: `src/app/shell.sage` doesn't handle short writes when writing to the PTY master, risking truncated data.
 - **Double-Execution Tests**: Missing test coverage in `src/app/cmd.sage` to assert remote commands only execute side-effects once.
 - **FD Leaks on Errors**: Mid-setup failures during PTY initialization lack proper file descriptor cleanup before returning.
