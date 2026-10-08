@@ -1,6 +1,7 @@
 # LinkGuard Journal
 
 ## Security patterns
+- Secure by Default: No external FFI calls are trusted for cryptography (except `/dev/urandom`), reinforcing strict sandbox isolation.
 - Hand-rolled cryptographic primitives are strictly utilized without external FFI dependencies, reducing supply chain attack surface.
 - Sliding 64-entry window replay protection effectively guarantees monotonic counter progression.
 - Noise_IK handshakes (X25519 + ChaCha20-Poly1305 + BLAKE2s) ensure mutually authenticated and encrypted sessions.
@@ -8,6 +9,7 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Partial Write Truncations**: Missing loops around `write()` FFI calls lead to silent data loss during heavy shell I/O.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
