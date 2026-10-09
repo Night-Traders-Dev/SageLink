@@ -28,6 +28,7 @@
 ```
 *Note: High reliance on IPC via FFI (e.g. `ffi_call(libc, "system")` in `src/app/shell.sage`) bypassing standard SageLang boundaries.*
 *Note on Memory Limits: The FILE service (`src/app/file.sage`) enforces a strict 16384-byte read buffer limit during chunked file processing.*
+*Note on Disk Management: The FILE service fails to clean up partially downloaded files when connection drops during streaming (e.g. `chunk_msg == nil`), causing disk space exhaustion over time.*
 
 **External Dependencies:**
 - `sagelang-lib-crypto` (loaded as `crypto` submodule for AES/ChaCha/Hash ops)
@@ -45,7 +46,7 @@
 
 ## Executive Summary
 
-This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Additionally, aborted file transfers fail to trigger cleanup, resulting in disk space exhaustion. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -57,65 +58,68 @@ This audit report identifies critical security vulnerabilities, performance bott
 6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+9. **Disk Space Exhaustion via Aborted Transfers**: `src/app/file.sage` fails to clean up the partially downloaded file (via `io.remove(filename)`) if the stream closes (`chunk_msg == nil`) mid-transfer, allowing an attacker to fill the disk with abandoned chunks.
+10. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
 
 ## Other Notable Findings
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
+- **Authenticated O(N^2) String Concatenation DoS**: `mux_reader_loop` concatenates payload bytes inefficiently, causing CPU spikes.
+- **Unbounded Authenticated Thread Spawning**: `mux_reader_loop` unconditionally spawns threads for authenticated `CHAN_OPEN`.
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
+- Security: 6.1/10
 - Performance: 5.8/10
-- Reliability: 5.5/10
+- Reliability: 5.1/10
 - Maintainability: 7.0/10
 - Documentation: 8.5/10
 
 ## Security Report
 
-**Finding 1: Unhandled FFI return values**
+**Finding 2: Unhandled FFI Return Values in PTY Setup**
 - **Severity**: High
 - **Evidence**: `app/shell.sage` calls `ffi_call(libc, "ptsname_r", "int", [master_fd, name_buf, 256])` without validating the integer return code before looping over `name_buf`.
 - **Fix Recommendation**: Always verify the return values of FFI calls, specifically `ptsname_r`, `posix_openpt`, and check for negative error codes before buffer reads.
 
-**Finding 2: DoS vulnerabilities (Memory/Network)**
-- **Severity**: High
-- **Evidence**: `transport/framing.sage` sets a maximum frame size of 1MB (`if len_val > 1048576`). Pre-authentication, attackers can exhaust memory by spamming large payloads. Furthermore, `tcp.recvall()` lacks read timeouts.
-- **Fix Recommendation**: Implement read timeouts for all socket operations during the Noise_IK handshake and strictly limit pre-authentication payload sizes to a few kilobytes.
-
-**Finding 3: Process and resource leaks**
+**Finding 3: Process / Resource Leaks**
 - **Severity**: High
 - **Evidence**: `app/shell.sage` spawns the interactive shell using `ffi_call(libc, "system", "int", ["/bin/sh"])`. The `kill(pid, 9)` only terminates the shell spawned by `system`, not the interactive session.
 - **Fix Recommendation**: Replace the `system()` call in the SHELL service with `execve` or `execvp` so that the child process image is fully replaced, ensuring accurate PID tracking and cleanup.
 
-**Finding 4: TOCTOU Weaknesses**
+**Finding 5: Memory Allocation DoS Risks**
+- **Severity**: High
+- **Evidence**: `transport/framing.sage` sets a maximum frame size of 1MB (`if len_val > 1048576`). Pre-authentication, attackers can exhaust memory by spamming large payloads.
+- **Fix Recommendation**: Strictly limit pre-authentication payload sizes to a few kilobytes.
+
+**Finding 6: Slowloris DoS Susceptibility**
+- **Severity**: High
+- **Evidence**: `tcp.recvall()` lacks read timeouts during the Noise_IK handshake, making the service vulnerable to connection stagnation.
+- **Fix Recommendation**: Implement read timeouts for all socket operations during handshakes.
+
+**Finding 7: File Permission TOCTOU Weaknesses**
 - **Severity**: Medium
 - **Evidence**: The CLI tool (`cli/sagelink.sage`) creates identity keys without atomically setting restrictive file permissions (e.g., `0600`) at the exact moment of file creation.
 - **Fix Recommendation**: Use secure file permission flags during the initial `open` call (e.g., `O_CREAT | O_EXCL` with mode `0600`). Note: `sys.shell_exec` blocks `&&` breaking the CLI's atomic key rename, necessitating true atomic FFI calls.
 
-**Finding 5: Authenticated O(N^2) String Concatenation DoS**
-- **Severity**: Medium
-- **Evidence**: `mux_reader_loop` in `src/mux/stream.sage` parses `CHAN_OPEN` frames by looping over `payload_bytes` and concatenating characters. A malicious authenticated peer can send up to a 1MB payload, resulting in extreme CPU overhead.
-- **Fix Recommendation**: Enforce strict length limits on `payload_bytes` prior to reading service strings and employ efficient memory slicing instead of iterative concatenation.
+**Finding 9: Disk Space Exhaustion via Aborted Transfers**
+- **Severity**: High
+- **Evidence**: `src/app/file.sage` aborts the receive loop on stream closure (`chunk_msg == nil`) but fails to invoke `io.remove(filename)` before returning, leaving partially downloaded files on disk indefinitely.
+- **Fix Recommendation**: Ensure all mid-transfer failure paths delete the incomplete target file before calling `stream_close`.
 
-**Finding 6: Unbounded Authenticated Thread Spawning**
-- **Severity**: Medium
-- **Evidence**: `mux_reader_loop` unconditionally executes `thread.spawn(run_cb)` for every incoming `CHAN_OPEN` request without checking active stream counts.
-- **Fix Recommendation**: Introduce a thread pool, or enforce a global concurrent stream limit for authenticated peers.
-
-**Finding 7: FFI Boundary Bypassing**
+**Finding 10: FFI Boundary Bypassing**
 - **Severity**: Medium
 - **Evidence**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries.
 - **Fix Recommendation**: Monitor cross-platform dependencies and limit direct FFI calls to specific audited wrappers.
 
-**Finding 8: Unbounded Aggregate Mux Queue Byte Size DoS**
-- **Severity**: Medium
-- **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
-- **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
-
 ## Performance Report
+
+**Finding 8: Synchronous DH Computation Blocking**
+- **Severity**: Medium
+- **Evidence**: `x25519` key exchanges block the main `mux_reader_loop` synchronously, halting all other stream processing.
+- **Fix Recommendation**: Dispatch Diffie-Hellman handshake processing to asynchronous worker threads.
 
 **Bottlenecks:**
 1. **O(N^2) Array Operations:** Iteratively pushing to arrays or concatenating strings in `utils.bytes`, `utils.to_list`, and payload parsers causes high memory churn.
@@ -139,6 +143,16 @@ This audit report identifies critical security vulnerabilities, performance bott
 - Consider dynamically scaling chunk sizes or optimizing I/O buffers for FILE transfers.
 
 ## Functionality Report
+
+**Finding 1: Unintended Double-Execution of Commands**
+- **Severity**: Critical
+- **Evidence**: `src/app/cmd.sage` executes remote commands twice—once via `ffi_run_command()` and once via `sys.shell_exec()`—leading to duplicated side-effects.
+- **Fix Recommendation**: Remove one of the execution paths, ensuring remote commands are only executed once.
+
+**Finding 4: Hardcoded C Struct Offsets**
+- **Severity**: High
+- **Evidence**: Terminal resizing logic manually builds a `winsize` struct by hardcoding 8 bytes. Padding and sizing differ heavily across architectures (e.g., Linux vs macOS).
+- **Fix Recommendation**: Calculate structural layouts dynamically or rely on safer FFI struct packing abstractions.
 
 **Working Features:**
 - Custom ChaCha20-Poly1305, BLAKE2s, and X25519 primitives pass RFC test vectors byte-for-byte.
