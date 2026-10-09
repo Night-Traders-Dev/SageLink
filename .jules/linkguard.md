@@ -27,6 +27,7 @@
 - **Inefficient Stream Resolution**: Linear probing up to 65536 iterations for resolving available stream IDs limits multiplexing efficiency under load.
 
 ## Architectural weaknesses
+- **Error Handling Disconnects**: Operations like FILE streams fail to execute cleanup (e.g., `io.remove()`) when mid-transfer network streams drop, abandoning state and risking resource exhaustion.
 - **FFI Boundary Bypassing**: Heavy reliance on direct IPC via FFI (e.g., `ffi_call(libc, "system")` in `src/app/shell.sage`) bypasses standard SageLang sandbox limits and type safety boundaries, elevating risks of native crashes.
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.
