@@ -8,6 +8,8 @@
 - No FFI calls are trusted for cryptography, aside from secure randomness retrieval (`/dev/urandom`).
 
 ## Recurring vulnerabilities
+- **Memory Leaks in Error Paths**: `src/app/file.sage` fails to free `read_buf` using `mem_free` in the `send_file` function before abandoning the buffer, which will lead to a memory leak because it falls out of scope.
+- **Unbounded Authenticated Thread Spawning**: `mux_reader_loop` unconditionally executes `thread.spawn(run_cb)` for every incoming `CHAN_OPEN` request without checking active stream counts, exposing the application to denial of service from authenticated peers.
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
@@ -30,7 +32,7 @@
 - **FFI Boundary Bypassing**: Heavy reliance on direct IPC via FFI (e.g., `ffi_call(libc, "system")` in `src/app/shell.sage`) bypasses standard SageLang sandbox limits and type safety boundaries, elevating risks of native crashes.
 - **Platform-Dependent IOCTLs**: System calls inherently rely on hardcoded, platform-specific IOCTL values across OS boundaries in the SHELL service.
 - **Inconsistent Execution Models**: The CMD service uses FFI `system()` (allowing all characters) alongside `sys.shell_exec()` (restricting unsafe characters like `&&`), causing desynchronized behavior. In `src/cli/sagelink.sage`, this blocking of `&&` actively breaks the atomic key generation.
-- **Hardcoded Memory Offsets**: Relying on fixed C struct offsets (e.g., `winsize` offset calculations) completely breaks cross-platform compatibility across disparate architectures and OS kernels.
+- **Hardcoded Memory Offsets**: Relying on fixed C struct offsets (e.g., `winsize` offset calculations) completely breaks cross-platform compatibility across disparate architectures and OS kernels. Furthermore, `src/app/file.sage` assumes `st_size` is at offset 48, which breaks on macOS or 32-bit platforms.
 - **Unbounded Multiplexing Queues**: Multiplexer queues bound the element count but fail to restrict the aggregate byte size, leading to unpredictable memory usage.
 
 ## Reliability risks

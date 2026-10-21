@@ -45,7 +45,7 @@
 
 ## Executive Summary
 
-This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, while hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
+This audit report identifies critical security vulnerabilities, performance bottlenecks, and functionality gaps within the SageLink repository. While core cryptographic primitives are functional, severe architectural flaws and significant security risks are present. Most notably, the CMD service executes side-effects twice (a dangerous `system()` vs `sys.shell_exec()` discrepancy in `src/app/cmd.sage`), and hardcoded C struct offsets in the SHELL service break cross-platform compatibility. Unhandled FFI returns, process tracking leaks, and lacking DoS protections require immediate remediation before production deployment. In addition, incomplete write handling in the PTY layer poses reliability risks. Furthermore, FFI boundary bypassing creates potential type safety and crash risks, memory leaks exist in error paths (like `read_buf` in FILE service), and hardcoded memory bounds (like the 16384-byte limit in the FILE service) could act as performance bottlenecks. Additionally, hardcoded memory offsets (like `st_size`) completely break cross-platform compatibility. Continuous monitoring of cross-platform dependencies and FFI boundaries is strongly advised. This report highlights key vulnerabilities and proposes actionable remediations.
 
 ## Top 10 Issues Ranked By Impact
 
@@ -58,19 +58,20 @@ This audit report identifies critical security vulnerabilities, performance bott
 7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
 9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+10. **Memory Leaks in Error Paths**: `src/app/file.sage` allocates `read_buf` but fails to free it with `mem_free(read_buf)` in the `send_file` function before abandoning the buffer, leading to memory leaks.
 
 ## Other Notable Findings
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
-- Performance: 5.8/10
-- Reliability: 5.5/10
-- Maintainability: 7.0/10
+- Security: 6.2/10
+- Performance: 5.7/10
+- Reliability: 5.4/10
+- Maintainability: 6.9/10
 - Documentation: 8.5/10
 
 ## Security Report
@@ -115,6 +116,12 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
 
+
+**Finding 8: Memory Leaks in Error Paths**
+- **Severity**: Medium
+- **Evidence**: `src/app/file.sage` fails to free `read_buf` using `mem_free` in the `send_file` function before abandoning the buffer, which will lead to a memory leak because it falls out of scope.
+- **Fix Recommendation**: Ensure all allocated memory blocks, like `read_buf`, are explicitly freed via `mem_free` prior to exiting the function or returning on errors.
+
 ## Performance Report
 
 **Bottlenecks:**
@@ -149,6 +156,7 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **CMD Service Side-Effects**: Remote commands execute twice. `ffi_run_command(cmd)` executes the command via `system()` to capture the exit code, and then `sys.shell_exec(cmd)` executes it again to capture stdout.
 - **SHELL Service Struct Layouts**: Terminal resizing logic manually builds a `winsize` struct by hardcoding 8 bytes. Padding and sizing differ heavily across architectures (e.g., Linux vs macOS).
 - **CLI Keygen Execution**: Key generation fails because `sys.shell_exec` actively blocks unsafe characters like `&&`, breaking the CLI's atomic key rename (`chmod 600 ... && mv ...`).
+- **Hardcoded Memory Offsets**: `src/app/file.sage` explicitly hardcodes the `st_size` offset (48 bytes), breaking cross-platform execution on systems with different layout architectures (like macOS or 32-bit platforms).
 
 **Missing Coverage:**
 - **Partial Write Handling**: `src/app/shell.sage` doesn't handle short writes when writing to the PTY master, risking truncated data.
