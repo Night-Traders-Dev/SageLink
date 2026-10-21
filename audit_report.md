@@ -53,21 +53,24 @@ This audit report identifies critical security vulnerabilities, performance bott
 2. **Unhandled FFI Return Values in PTY Setup**: Failing to check `ptsname_r` return values in `src/app/shell.sage` risks out-of-bounds memory reads on uninitialized buffers.
 3. **Process / Resource Leaks**: Using `system("/bin/sh")` instead of `execve` in `src/app/shell.sage` to spawn long-running shells causes the parent to lose tracking, leading to orphaned processes because the parent cannot reliably kill the shell.
 4. **Hardcoded C Struct Offsets**: `src/app/shell.sage` hardcodes the `winsize` offset (8 bytes), breaking cross-platform execution on systems with different layout architectures.
-5. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
-6. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
-7. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
-8. **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
-9. **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
-10. **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
+5. **Path Stripping File Overwrite**: `src/app/file.sage` indiscriminately strips directory paths from filenames (`filename_raw`), allowing an attacker to maliciously overwrite any file in the current working directory.
+6. **Unauthenticated TCP Framing Length DoS**: `src/transport/framing.sage` reads the 4-byte length prefix and allocates up to 1MB of memory before authenticating the payload, opening vectors for memory exhaustion DoS attacks by unauthenticated clients.
+7. **Disk Space Exhaustion DoS**: `src/app/file.sage` writes incoming chunks directly to disk but does not cleanup intermediate file states effectively on early connection termination, leading to disk space exhaustion.
+8. **Memory Allocation DoS Risks**: Lack of validation on payload sizes (up to 1MB allowed in `src/transport/framing.sage`) and unbounded queue byte sizes expose the daemon to memory exhaustion attacks.
+9. **Slowloris DoS Susceptibility**: Blocking `tcp.recvall()` socket reads in the handshake (`src/cli/sagelink.sage`) and stream readers lack timeouts, making the service vulnerable to connection stagnation.
+10. **File Permission TOCTOU Weaknesses**: Sensitive file creations (e.g., identity keys in `src/cli/sagelink.sage`) lack secure atomic permission management.
 
 ## Other Notable Findings
+- **Synchronous DH Computation Blocking**: Heavy Diffie-Hellman calculations (`x25519` inside `read_message_1`/`write_message_2` in `src/mux/stream.sage`) block the multiplexer's main reader loop, reducing overall stream concurrency.
+- **FFI Boundary Bypassing**: `app/shell.sage` and other components make high reliance on IPC via FFI bypassing standard SageLang boundaries, escalating native crash risks.
+- **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size. An authenticated attacker can exhaust memory by sending 1000 items of 1MB each.
 - **Undocumented FILE Read Buffer Limit**: `src/app/file.sage` relies on a strict 16384-byte `read_buf` limit, which risks silent performance degradation on high-bandwidth links if not dynamically scaled.
 - **Idle CPU Waste via Polling**: Tight polling loops relying on `thread.sleep(0.005)` in `src/mux/stream.sage` are used for stream reads and synchronization (e.g., awaiting rekeying), causing unnecessary CPU load.
 - **Partial Write Reliability Risk in SHELL**: `src/app/shell.sage` does not handle short writes when calling `ffi_call(libc, "write", ...)`, which can result in truncated terminal output under heavy load.
 
 ## Repository Health Score
 
-- Security: 6.3/10
+- Security: 5.9/10
 - Performance: 5.8/10
 - Reliability: 5.5/10
 - Maintainability: 7.0/10
@@ -114,6 +117,22 @@ This audit report identifies critical security vulnerabilities, performance bott
 - **Severity**: Medium
 - **Evidence**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size.
 - **Fix Recommendation**: Enforce a maximum aggregate byte size for each stream queue to prevent memory exhaustion by a malicious authenticated peer.
+
+
+**Finding 9: Path Stripping File Overwrite**
+- **Severity**: High
+- **Evidence**: `app/file.sage` strips forward and backward slashes from the remote filename, but writes the file directly to the current working directory without checking for pre-existing critical files.
+- **Fix Recommendation**: Ensure files transferred via the FILE service are saved into an isolated, dedicated directory to prevent accidental overwrites of existing daemon files or keys.
+
+**Finding 10: Unauthenticated TCP Framing Length DoS**
+- **Severity**: High
+- **Evidence**: `transport/framing.sage` reads up to 1MB based purely on the `len_val` sent over the TCP socket pre-authentication.
+- **Fix Recommendation**: Enforce an unauthenticated frame length limit (e.g., 2048 bytes) for the first frames to prevent unauthenticated clients from forcing large allocations.
+
+**Finding 11: Disk Space Exhaustion DoS**
+- **Severity**: Medium
+- **Evidence**: In `src/app/file.sage`, if the connection drops or file size validation fails mid-transfer, the partially written file is not consistently removed.
+- **Fix Recommendation**: Ensure temporary files for ongoing transfers are tracked and cleanly deleted in all error paths.
 
 ## Performance Report
 

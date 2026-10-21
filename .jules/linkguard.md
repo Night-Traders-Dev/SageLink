@@ -11,12 +11,14 @@
 - **Process/Resource Leaks**: Relying on `system()` instead of `execve` to spawn long-running child processes results in the parent losing direct tracking of the actual application (e.g., interactive shell), causing orphaned processes.
 - **TOCTOU Weaknesses**: Time-of-Check to Time-of-Use file permission vulnerabilities exist during sensitive file creation operations (e.g., identity key generation).
 - **Double-Execution Risks**: Command execution workflows involve double-execution patterns (using `system()` then `shell_exec()`) that trigger unintended and duplicated remote side-effects.
-- **DoS via Memory Exhaustion**: Lack of bounding on memory allocations (accepting payload sizes up to 1MB pre-authentication) and unbounded thread spawning expose the application to denial of service.
+- **Path Stripping File Overwrite**: Indiscriminate sanitization of filenames strips path traversal characters but writes the raw filename to the current working directory, threatening to overwrite critical files.
+- **DoS via Memory Exhaustion (Unauthenticated)**: `transport/framing.sage` will allocate large byte buffers up to 1MB strictly derived from an unauthenticated wire format length prefix.
+- **DoS via Memory Exhaustion (Authenticated)**: Lack of bounding on memory allocations and unbounded thread spawning expose the application to denial of service.
 - **Unbounded Aggregate Mux Queue Byte Size DoS**: `src/mux/stream.sage` limits the stream queue element count to 1000 items, but does not bound the aggregate byte size, risking silent memory exhaustion.
 - **DoS via CPU Exhaustion**: O(N^2) string concatenation when parsing large `CHAN_OPEN` payloads authenticated by malicious peers.
 - **Unhandled FFI Returns**: Neglecting to validate FFI return values (e.g., ignoring `ptsname_r` errors) opens vectors for out-of-bounds (OOB) memory reads on uninitialized buffers.
 - **DoS via Slowloris**: The application lacks network timeouts during handshakes and stream reading, making it susceptible to connection stagnation attacks.
-- **Disk Space Exhaustion**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
+- **Disk Space Exhaustion DoS**: Incomplete disk cleanup on failed or aborted file transfers leads to gradual storage depletion.
 
 ## Performance bottlenecks
 - **Hardcoded Memory Bounds**: Strict memory boundaries like the 16384-byte chunk limit in `src/app/file.sage` limit maximum theoretical throughput over high bandwidth links, degrading file transfer speeds.
